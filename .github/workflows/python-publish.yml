@@ -28,8 +28,9 @@ jobs:
         python-version: '3.x'
     - name: Install dependencies
       run: |
+        apt install -y libev-dev
         python -m pip install --upgrade pip
-        pip install build cffi
+        pip install build
     - name: Build package
       run: python -m build --no-isolation
     - name: Publish package

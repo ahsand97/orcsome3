@@ -30,7 +30,7 @@ jobs:
       run: |
         sudo apt install -y libev-dev
         python -m pip install --upgrade pip
-        pip install build
+        pip install build cffi
     - name: Build package
       run: python -m build --no-isolation
     - name: Publish package

@@ -78,4 +78,4 @@ Edit ``~/.config/orcsome3/rc.py``:
             if not wm.event_window.decorated:
                 wm.set_window_state(window=wm.event_window, decorate=True)
 
-And start orcsome3. That's all.
+And start ``orcsome3``. That's all.

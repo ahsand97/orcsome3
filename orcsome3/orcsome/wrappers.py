@@ -231,8 +231,8 @@ class Window(int):
         if not icon.is_file():
             print("The path is not a valid file")
             return
-        if icon.stat().st_size > 2000000:
-            print("The maximum icon size is 2Mb")
+        if icon.stat().st_size > 10000000:
+            print("The maximum icon size is 10Mb")
             return
         self.wm._set_window_icon(window=self, icon=str(icon))
 

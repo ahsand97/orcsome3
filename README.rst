@@ -1,4 +1,4 @@
-Orcsome3 is a port from python2 to python3 of the library Orcsome, which is a scripting extension for NETWM compliant window managers.
+Orcsome3 is a port from python2 to python3 and rework of `orcsome <https://github.com/baverman/orcsome>`_, which is a scripting extension for NETWM compliant window managers.
 
 Features
 --------
@@ -21,10 +21,9 @@ Installation
 
 From PyPI
 '''''''''
+::
 
-`pip`_::
-
-   pip install orcsome3
+    python3 -m pip install orcsome3
 
 
 From source
@@ -35,13 +34,14 @@ From source
    git clone --depth=1 git://github.com/ahsand97/orcsome3.git
    cd orcsome3
    python3 -m pip install .
+
 ---------------------------------------------------
 
 Quick start
 '''''''''''
 
 Some of the functionalities offered are:
-    - To bind hot keys
+    - To bind global hot keys
     - To hide the title bar when a window is maximized
     - To change the icon of a window
 
@@ -62,7 +62,7 @@ Edit ``~/.config/orcsome3/rc.py``::
     # Change window icon
     @wm.on_manage(name="easyeffects", cls="easyeffects")
     def on_create_easyeffects() -> None:
-        path_imagen: Path = Path("/usr/share/icons/hicolor/scalable/apps/com.github.wwmm.easyeffects.svg")
+        path_imagen: Path = Path("/my/other/icon/icon.svg")
         wm.event_window.set_window_icon(icon=path_imagen)
 
     # Hide title bar when a window is maximized

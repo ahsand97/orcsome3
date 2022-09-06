@@ -28,9 +28,9 @@ jobs:
         python-version: '3.x'
     - name: Install dependencies
       run: |
-        sudo apt install -y libev-dev libx11-dev libxss-dev libxext-dev
+        sudo apt install -y python-cffi libev-dev libx11-dev libxss-dev libxext-dev libmagickwand-dev
         python -m pip install --upgrade pip
-        pip install build cffi
+        pip install build
     - name: Build package
       run: python -m build --no-isolation
     - name: Publish package

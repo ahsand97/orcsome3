@@ -41,11 +41,14 @@ Quick start
 '''''''''''
 
 Some of the functionalities offered are:
+
     - To bind global hot keys
     - To hide the title bar when a window is maximized
     - To change the icon of a window
 
-Edit ``~/.config/orcsome3/rc.py``::
+Edit ``~/.config/orcsome3/rc.py``:
+
+.. code-block:: python
 
     from orcsome3.orcsome import get_wm
     from orcsome3.orcsome.wm import WM

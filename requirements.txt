@@ -1,0 +1,6 @@
+cffi==1.15.1
+mypy==0.971
+mypy-extensions==0.4.3
+pycparser==2.21
+tomli==2.0.1
+typing_extensions==4.3.0

@@ -37,6 +37,9 @@ jobs:
       run: |
         export CFLAGS=$(pkg-config --cflags x11 xscrnsaver xext MagickWand gdlib)
         export LDFLAGS=$(pkg-config --libs x11 xscrnsaver xext MagickWand gdlib)
+        echo $CFLAGS
+        echo $LDFLAGS
+        echo $LD_LIBRARY_PATH
         python -m build --no-isolation
     - name: Publish package
       uses: pypa/gh-action-pypi-publish@27b31702a0e7fc50959f5ad993c78deac1bdfc29

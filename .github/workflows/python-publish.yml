@@ -28,6 +28,18 @@ jobs:
         python-version: '3.x'
     - name: Install dependencies
       run: |
+        sudo apt remove -y imagemagick imagemagick-6-common
+        wget https://imagemagick.org/archive/ImageMagick.tar.gz
+        mkdir -p ./ImageMagick7
+        tar xvzf ImageMagick.tar.gz --directory ./ImageMagick7 --strip-components=1
+        cd ImageMagick7
+        ./configure
+        make
+        sudo make install
+        sudo ldconfig /usr/local/lib
+        
+        sudo apt remove -y nginx libgd3
+        sudo apt install -y libev-dev libx11-dev libxss-dev libxext-dev libgd-dev
         python -m pip install --upgrade pip
         pip install build
     - name: Build package

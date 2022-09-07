@@ -35,13 +35,7 @@ jobs:
         pip install build cffi
     - name: Build package
       run: |
-        export CFLAGS=$(pkg-config --cflags x11 xscrnsaver xext MagickWand gdlib)
-        export LDFLAGS=$(pkg-config --libs x11 xscrnsaver xext MagickWand gdlib)
-        echo $CFLAGS
-        echo $LDFLAGS
-        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/include/ImageMagick-6:/usr/include/x86_64-linux-gnu//ImageMagick-6
-        echo $LD_LIBRARY_PATH
-        python -m build --no-isolation
+        python -m build --sdist --no-isolation
     - name: Publish package
       uses: pypa/gh-action-pypi-publish@27b31702a0e7fc50959f5ad993c78deac1bdfc29
       with:

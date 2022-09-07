@@ -28,17 +28,24 @@ jobs:
         python-version: '3.x'
     - name: Install dependencies
       run: |
-        sudo apt remove -y nginx
-        sudo apt remove -y libgd3
-        sudo apt install -y libev-dev libx11-dev libxss-dev libxext-dev libmagickwand-dev libgd-dev
+        sudo apt remove -y imagemagick imagemagick-6-common
+        wget https://imagemagick.org/archive/ImageMagick.tar.gz
+        mkdir -p ./ImageMagick7
+        tar xvzf ImageMagick.tar.gz --directory ./ImageMagick7 --strip-components=1
+        cd ImageMagick7
+        ./configure
+        make
+        sudo make install
+        sudo ldconfig /usr/local/lib
+        magick -version
+        
+        sudo apt remove -y nginx libgd3
+        sudo apt install -y libev-dev libx11-dev libxss-dev libxext-dev libgd-dev
         python -m pip install --upgrade pip
         pip install build cffi
     - name: Build package
       run: |
-        echo $LD_LIBRARY_PATH
         python -m build --no-isolation
-      env:
-        LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.10.6/x64/lib:/usr/include/x86_64-linux-gnu//ImageMagick-6:/usr/include/ImageMagick-6
     - name: Publish package
       uses: pypa/gh-action-pypi-publish@27b31702a0e7fc50959f5ad993c78deac1bdfc29
       with:

@@ -224,7 +224,7 @@ class Window(int):
 
     def set_window_icon(self, icon: Union[Path, str]) -> None:
         """
-        This function sets the window's icon, the maximum icon size is 2Mb
+        This function sets the window's icon, the maximum icon size is 10Mb
         """
         if isinstance(icon, str):
             icon = Path(icon)

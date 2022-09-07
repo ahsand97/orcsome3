@@ -96,7 +96,6 @@ Edit ``~/.config/orcsome3/rc.py``:
 
     from orcsome3.orcsome import get_wm
     from orcsome3.orcsome.wm import WM
-    from orcsome3.orcsome.wrappers import Window
     from pathlib import Path
 
     wm: WM = get_wm()

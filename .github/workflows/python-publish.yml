@@ -41,7 +41,7 @@ jobs:
         sudo apt remove -y nginx libgd3
         sudo apt install -y libev-dev libx11-dev libxss-dev libxext-dev libgd-dev
         python -m pip install --upgrade pip
-        pip install build cffi wheel
+        pip install build cffi
     - name: Build package
       run: |
         python -m build --sdist --no-isolation

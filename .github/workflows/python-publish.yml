@@ -29,6 +29,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt remove -y imagemagick imagemagick-6-common
+        sudo apt build-dep -y imagemagick
         wget https://imagemagick.org/archive/ImageMagick.tar.gz
         mkdir -p ./ImageMagick7
         tar xvzf ImageMagick.tar.gz --directory ./ImageMagick7 --strip-components=1

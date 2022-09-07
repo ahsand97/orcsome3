@@ -38,7 +38,7 @@ jobs:
         echo $LD_LIBRARY_PATH
         python -m build --no-isolation
       env:
-        LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.10.6/x64/lib:/usr/include/x86_64-linux-gnu/ImageMagick-6:/usr/include/ImageMagick-6
+        LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.10.6/x64/lib:/usr/include/x86_64-linux-gnu//ImageMagick-6:/usr/include/ImageMagick-6
     - name: Publish package
       uses: pypa/gh-action-pypi-publish@27b31702a0e7fc50959f5ad993c78deac1bdfc29
       with:

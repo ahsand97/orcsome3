@@ -28,6 +28,8 @@ jobs:
         python-version: '3.x'
     - name: Install dependencies
       run: |
+        sudo apt remove nginx
+        sudo apt remove libgd3
         sudo apt install -y libev-dev libx11-dev libxss-dev libxext-dev libmagickwand-dev libgd-dev
         python -m pip install --upgrade pip
         pip install build cffi

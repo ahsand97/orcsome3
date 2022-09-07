@@ -35,8 +35,7 @@ jobs:
         pip install build cffi
     - name: Build package
       run: |
-        echo "/usr/include/x86_64-linux-gnu/ImageMagick-6" >> $LD_LIBRARY_PATH
-        echo "/usr/include/ImageMagick-6" >> $LD_LIBRARY_PATH
+        echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/include/x86_64-linux-gnu/ImageMagick-6:/usr/include/ImageMagick-6" >> $GITHUB_ENV
         echo $LD_LIBRARY_PATH
         python -m build --no-isolation
     - name: Publish package

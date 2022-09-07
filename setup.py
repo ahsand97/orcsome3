@@ -132,6 +132,7 @@ setup(
     author_email="ahsand.perez@gmail.com",
     description="Scripting extension for NETWM compliant window managers",
     long_description=open(file="README.rst").read(),
+    long_description_content_type="text/x-rst",
     zip_safe=False,
     packages=["orcsome3.orcsome", "orcsome3-stubs.orcsome"],
     package_data={"orcsome3-stubs.orcsome": ["*.pyi", "**/*.pyi"]},
@@ -144,7 +145,7 @@ setup(
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
-        "Development Status :: 1 - Beta",
+        "Development Status :: 4 - Beta",
         "Environment :: X11 Applications",
         "Topic :: Desktop Environment :: Window Managers",
         "Intended Audience :: Developers",

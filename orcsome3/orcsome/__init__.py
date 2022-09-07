@@ -2,8 +2,6 @@ from typing import Optional, cast
 
 from .wm import WM, ImmediateWM
 
-VERSION = "0.1"
-
 _wm: Optional[WM] = None
 
 

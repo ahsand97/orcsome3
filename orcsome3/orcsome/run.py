@@ -6,7 +6,8 @@ from argparse import ArgumentParser, Namespace
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
-from . import VERSION, ev, update_wm
+from ..version import VERSION
+from . import ev, update_wm
 from .wm import WM
 
 logger: logging.Logger = logging.getLogger(name=__name__)

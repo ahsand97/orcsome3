@@ -3,10 +3,13 @@ from typing import List
 
 from setuptools import setup
 
-import orcsome3.orcsome as orcsome3
+import orcsome3.version
 
 
 def generate_stubs() -> None:
+    """
+    This function re-generate the stubs for orcsome3, only meant to be used for development
+    """
     try:
         from pathlib import Path
 
@@ -24,8 +27,11 @@ def generate_stubs() -> None:
             import mypy.stubgen as stubgen
 
             def initialize_modules(directory: Path) -> None:
+                # Initializes orcsome-stubs : __init__.py
                 directory.mkdir(parents=True, exist_ok=True)
                 directory.joinpath("__init__.py").touch(exist_ok=True)
+
+                # Initializes orcsome-stubs.orcsome : __init__.py
                 inner_directory = directory.joinpath("orcsome")
                 inner_directory.mkdir(parents=True, exist_ok=True)
                 inner_directory.joinpath("__init__.py").touch(exist_ok=True)
@@ -36,19 +42,32 @@ def generate_stubs() -> None:
             initialize_modules(directory=output_dir)
             args = ["--verbose", "--output", str(output_dir), str(Path(__file__).parent.joinpath("orcsome3"))]
             sys.argv.extend(args)
+            # This will run "stubgen --verbose --output ./orcsome3-stubs ./orcsome3"
             stubgen.main()
+            # returns the full path of ./orcsome3-stubs
             return output_dir
 
         def copy_files(dir: Path) -> Path:
+            """
+            This function will re-order the files created by function `generate_files`
+            """
             import shutil
 
-            destiny: Path = dir.joinpath("orcsome")
+            destiny: Path = dir.joinpath("orcsome")  # ./orcsome3-stubs/orcsome
+            # Copy the file ./orcsome3-stubs/orcsome3/version.pyi to ./orcsome3-stubs/version.pyi
+            shutil.copy(src=dir.joinpath("orcsome3", "version.pyi"), dst=dir.joinpath("version.pyi"))
             for file_ in dir.joinpath("orcsome3", "orcsome").iterdir():
+                # Copy every single file from ./orcsome3-stubs/orcsome3/orcsome to ./orcsome3-stubs/orcsome
                 shutil.copy(src=file_, dst=destiny.joinpath(file_.name))
-            rmdir(directory=dir.joinpath("orcsome3"))
+            rmdir(directory=dir.joinpath("orcsome3"))  # remove recursively ./orcsome3-stubs/orcsome3
             return destiny
 
         def complete_stubs(dir: Path) -> None:
+            """
+            This function will edit every .pyi file and replace the type Incomplete
+            for the type Any, also, it will put the decorator @cached_property to the
+            necessary methods accordingly to source
+            """
             files_to_edit: List[Path] = []
             for file_ in dir.iterdir():
                 if file_.name.endswith(".pyi"):
@@ -113,7 +132,7 @@ def generate_stubs() -> None:
                 with file_.open(mode="w") as f_:
                     f_.writelines(new_content)
 
-        output_dir: Path = generate_files()
+        output_dir: Path = generate_files()  # ./orcsome3-stubs
         stub_dir: Path = copy_files(dir=output_dir)
         complete_stubs(dir=stub_dir)
     except ModuleNotFoundError as e:
@@ -127,14 +146,14 @@ if "--generate-stubs" in sys.argv:
 
 setup(
     name="orcsome3",
-    version=orcsome3.VERSION,
+    version=orcsome3.version.VERSION,
     author="Ahsan Pérez",
     author_email="ahsand.perez@gmail.com",
     description="Scripting extension for NETWM compliant window managers",
     long_description=open(file="README.rst").read(),
     long_description_content_type="text/x-rst",
     zip_safe=False,
-    packages=["orcsome3.orcsome", "orcsome3-stubs.orcsome"],
+    packages=["orcsome3", "orcsome3.orcsome", "orcsome3-stubs.orcsome"],
     package_data={"orcsome3-stubs.orcsome": ["*.pyi", "**/*.pyi"]},
     include_package_data=True,
     cffi_modules=["orcsome3/orcsome/ev_build.py:ffibuilder", "orcsome3/orcsome/xlib_build.py:ffibuilder"],

@@ -1,5 +1,6 @@
 import logging
-from . import VERSION as VERSION, ev as ev, update_wm as update_wm
+from . import ev as ev, update_wm as update_wm
+from ..version import VERSION as VERSION
 from .wm import WM as WM
 from pathlib import Path
 from typing import Any, Dict, Optional

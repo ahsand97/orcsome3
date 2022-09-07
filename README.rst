@@ -76,6 +76,9 @@ From source
    cd orcsome3
    python3 -m pip install .
 
+**orcsome3 installs an executable script** "``orcsome3``" **located in** ``~/.local/bin/orcsome3`` **at a user level
+or in** ``/usr/bin/orcsome3`` **if it was installed as root**
+
 ---------------------------------------------------
 
 Quick start

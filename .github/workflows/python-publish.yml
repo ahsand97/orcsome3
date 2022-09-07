@@ -39,7 +39,7 @@ jobs:
         export LDFLAGS=$(pkg-config --libs x11 xscrnsaver xext MagickWand gdlib)
         echo $CFLAGS
         echo $LDFLAGS
-        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/include/ImageMagick-6
+        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/include/ImageMagick-6:/usr/include/x86_64-linux-gnu//ImageMagick-6
         echo $LD_LIBRARY_PATH
         python -m build --no-isolation
     - name: Publish package

@@ -34,7 +34,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install build cffi
     - name: Build package
-      run:
+      run: |
         export CFLAGS=$(pkg-config --cflags x11 xscrnsaver xext MagickWand gdlib)
         export LDFLAGS=$(pkg-config --libs x11 xscrnsaver xext MagickWand gdlib)
         python -m build --no-isolation

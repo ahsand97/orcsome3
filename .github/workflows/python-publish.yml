@@ -35,7 +35,10 @@ jobs:
         pip install build cffi
     - name: Build package
       run: |
+        echo $LD_LIBRARY_PATH
         python -m build --sdist --no-isolation
+      env:
+        LD_LIBRARY_PATH: $LD_LIBRARY_PATH:/usr/include/x86_64-linux-gnu//ImageMagick-6:/usr/include/ImageMagick-6
     - name: Publish package
       uses: pypa/gh-action-pypi-publish@27b31702a0e7fc50959f5ad993c78deac1bdfc29
       with:

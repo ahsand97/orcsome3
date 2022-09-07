@@ -19,6 +19,47 @@ Features
 Installation
 ------------
 
+Before installing orcsome3 it is necessary to have the build dependencies installed:
+
+orcsome3 uses the following libraries:
+
+    - libev: Full-featured and high-performance event loop
+    - X11
+    - Xss: X11 Screen Saver extension client library
+    - Xext: Misc X Extension Library
+    - gd: GD graphics library
+    - MagickWand: C API for ImageMagick
+
+To install them:
+
+Debian/Ubuntu
+'''''''''''''
+::
+
+    sudo apt install libev-dev libx11-dev libxss-dev libxext-dev libgd-dev
+
+It is necessary to install ImageMagick7 from source::
+
+    sudo apt remove -y imagemagick imagemagick-6-common
+    sudo apt build-dep -y imagemagick
+    wget https://imagemagick.org/archive/ImageMagick.tar.gz
+    mkdir -p ./ImageMagick7
+    tar xvzf ImageMagick.tar.gz --directory ./ImageMagick7 --strip-components=1
+    cd ImageMagick7
+    ./configure
+    make
+    sudo make install
+    sudo ldconfig /usr/local/lib
+
+Arch Linux
+''''''''''
+::
+
+    sudo pacman -S libev libx11 libxss libxext imagemagick
+
+After installing the build dependencies, orcsome3 can be installed:
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
 From PyPI
 '''''''''
 ::

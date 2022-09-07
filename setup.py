@@ -140,6 +140,7 @@ setup(
     cffi_modules=["orcsome3/orcsome/ev_build.py:ffibuilder", "orcsome3/orcsome/xlib_build.py:ffibuilder"],
     setup_requires=["cffi>=1.0.0"],
     install_requires=["cffi>=1.0.0"],
+    extras_require={"dev": ["mypy", "mypy-extensions", "pycparser", "tomli", "typing_extensions"]},
     scripts=["orcsome3/bin/orcsome3"],
     url="https://github.com/ahsand97/orcsome3",
     classifiers=[

@@ -28,10 +28,13 @@ jobs:
         python-version: '3.x'
     - name: Install dependencies
       run: |
-        sudo apt install -y libev-dev libx11-dev libxss-dev libxext-dev libmagickcore-dev libmagickwand-dev libgd-dev
+        sudo apt install -y libev-dev libx11-dev libxss-dev libxext-dev libmagickwand-dev
         python -m pip install --upgrade pip
         pip install build cffi
     - name: Build package
+      env:
+        CFLAGS: $(pkg-config --cflags x11 xscrnsaver xext MagickWand gdlib)
+        LDFLAGS: $(pkg-config --libs x11 xscrnsaver xext MagickWand gdlib)
       run: python -m build --no-isolation
     - name: Publish package
       uses: pypa/gh-action-pypi-publish@27b31702a0e7fc50959f5ad993c78deac1bdfc29

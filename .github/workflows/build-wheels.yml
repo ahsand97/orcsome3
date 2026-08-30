@@ -1,0 +1,49 @@
+name: Build wheels
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build_wheels:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cibw_version: v4.2.0
+            cibw_build: "cp3[9]* cp31*"
+          - cibw_version: v3.4.1
+            cibw_build: "cp38-*"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git cmake autoconf automake libtool pkg-config meson ninja-build \
+            libx11-dev libxss-dev libxext-dev libxtst-dev curl
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: pypa/cibuildwheel@${{ matrix.cibw_version }}
+        env:
+          CIBW_BUILD: ${{ matrix.cibw_build }}
+          CIBW_SKIP: "*-musllinux_* *t-*"
+          CIBW_BEFORE_BUILD: "pip install 'Cython>=3.0'"
+          CIBW_ENVIRONMENT: "ORCSOME3_BUILD_JOBS=2"
+          CIBW_TEST_SKIP: "*"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-${{ matrix.cibw_version }}
+          path: wheelhouse/*.whl

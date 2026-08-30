@@ -9,10 +9,11 @@ cimport libev.libev as libev
 cimport resvg.resvg as resvg
 cimport xlib.xlib as xlib
 from libc.math cimport ceil
-from libc.stdlib cimport calloc, malloc, realloc
-from libc.string cimport memcpy
+from libc.stddef cimport size_t
+from libc.stdlib cimport calloc, free, malloc, realloc
+from libc.string cimport memcpy, memset
 from pathlib import Path
-from libc.stdint cimport uint32_t
+from libc.stdint cimport uint32_t, uintptr_t
 from cython.operator cimport dereference
 
 
@@ -21,9 +22,33 @@ from cython.operator cimport dereference
 ctypedef struct IconData:
     int length
     unsigned char *data
+    bint magick_memory
 
 
-# Classes
+_c_string_cache: dict[str, bytes] = {}
+_intern_cache: dict[tuple[int, str, bool], int] = {}
+_atom_name_cache: dict[tuple[int, int], str] = {}
+
+
+cdef char *get_char_from_py_string(str string):
+    """Return a stable C string pointer backed by a module-level bytes cache."""
+    cdef bytes py_bytes = _c_string_cache.get(string)
+    if py_bytes is None:
+        py_bytes = string.encode()
+        _c_string_cache[string] = py_bytes
+    return <char *>py_bytes
+
+
+cdef void release_icon_data(IconData *icon_data):
+    if icon_data.data == NULL:
+        return
+    if icon_data.magick_memory:
+        imagemagick.MagickRelinquishMemory(icon_data.data)
+    else:
+        free(icon_data.data)
+    icon_data.data = NULL
+    icon_data.length = 0
+    icon_data.magick_memory = False
 
 cdef class PyDisplay:
     cdef xlib.Display *_display
@@ -47,7 +72,7 @@ cdef class PyXEvent:
         return self._type
 
     @type.setter
-    def type(self, type: EVENT_TYPES):
+    def type(self, type: EVENT_TYPES) -> None:
         self._type = type
 
     @staticmethod
@@ -69,7 +94,7 @@ cdef class PyXEvent:
         self.display = PyDisplay._new_(display=display)
         self.window = window
     
-    def _get_specific_event_(self):
+    def _get_specific_event_(self) -> PyXEvent:
         """
         Method used to retrieve the specific event based in the TYPE
         """
@@ -120,13 +145,14 @@ cdef class PyXErrorEvent(PyXEvent):
         return pyXErrorEvent
 
     cdef get_message(self):
-        # Get the error message using XGetErrorText
         cdef int length = 1024
         cdef char *buffer = <char *>malloc(size=<size_t>(sizeof(char) * length))
+        if buffer == NULL:
+            self.msg = ""
+            return
         xlib.XGetErrorText(display=self.display._display, code=<int>self.error_code, buffer_return=buffer, length=length)
-        cdef bytes buffer_bytes = <bytes>buffer
-        self.msg = buffer_bytes.decode()
-        xlib.XFree(data=<void *>buffer)
+        self.msg = buffer[:length].decode(errors="replace")
+        free(buffer)
 
 cdef class PyXKeyEvent(PyXEvent):
     cdef public xlib.Window root
@@ -493,31 +519,25 @@ cdef class PyXClientMessageEvent(PyXEvent):
         int format,
         data: pyarray.array[int]
     ) -> PyXClientMessageEvent:
-        cdef xlib.XClientMessageEvent xClientMessageEvent = xlib.XClientMessageEvent(  # type: ignore
-            type=type,
-            serial=serial,
-            send_event=<int>send_event,
-            display=display._display,
-            window=window,
-            message_type=message_type,
-            format=format,
-        )
-        cdef char[20] b
-        cdef short[10] s
-        cdef long[5] l
+        cdef xlib.XClientMessageEvent xClientMessageEvent
+        memset(&xClientMessageEvent, 0, sizeof(xClientMessageEvent))
+        xClientMessageEvent.type = type
+        xClientMessageEvent.serial = serial
+        xClientMessageEvent.send_event = <int>send_event
+        xClientMessageEvent.display = display._display
+        xClientMessageEvent.window = window
+        xClientMessageEvent.message_type = message_type
+        xClientMessageEvent.format = format
         pyformat: PROPERTY_FORMAT = PROPERTY_FORMAT.new_from_value(value=format)
         if pyformat == PROPERTY_FORMAT.CHAR:
-            for i in range(20):
-                b[i] = data[i]
+            for i in range(min(20, len(data))):
+                xClientMessageEvent.b[i] = <char>data[i]
         elif pyformat == PROPERTY_FORMAT.SHORT:
-            for i in range(10):
-                s[i] = data[i]
+            for i in range(min(10, len(data))):
+                xClientMessageEvent.s[i] = <short>data[i]
         elif pyformat == PROPERTY_FORMAT.LONG:
-            for i in range(5):
-                l[i] = data[i]
-        xClientMessageEvent.b = b
-        xClientMessageEvent.s = s
-        xClientMessageEvent.l = l
+            for i in range(min(5, len(data))):
+                xClientMessageEvent.l[i] = <long>data[i]
         return PyXClientMessageEvent._new_(client_message_event=&xClientMessageEvent)
 
 cdef class PyXWindowChanges:
@@ -734,7 +754,7 @@ cdef class PyLoop:
         cdef libev.evLoop *loop = libev.ev_loop_new(flags=<unsigned int>new_flags)
         return PyLoop._new_(loop=loop)
 
-    cpdef run(self, flags: Union[int, list[int]]):
+    def run(self, flags: Union[int, list[int]]) -> None:
         cdef int run_flags = PYLOOP_RUN_LOOP_FLAGS.EVRUN_ALWAYS.value
         if isinstance(flags, list):
             run_flags = flags[0]
@@ -744,14 +764,15 @@ cdef class PyLoop:
             run_flags = flags
         libev.ev_run(loop=self.loop, flags=run_flags)
 
-    cpdef break_(self, int how_to_break_flag):
+    def break_(self, how_to_break_flag: int) -> None:
         libev.ev_break(loop=self.loop, how=how_to_break_flag)
 
-    cpdef destroy(self):
+    def destroy(self) -> None:
         libev.ev_loop_destroy(loop=self.loop)
 
 cdef class PyIOWatcher:
     cdef libev.ev_io *io_watcher
+    cdef bint _owns_watcher
     _callbacks: dict[str, Callable[..., Any]]
 
     @property
@@ -764,29 +785,37 @@ cdef class PyIOWatcher:
 
     @staticmethod
     cdef PyIOWatcher _new_(libev.ev_io *io_watcher = NULL, callbacks: Optional[dict[str, Callable[..., Any]]] = None):
+        cdef PyIOWatcher py_io_watcher = PyIOWatcher()
         if io_watcher == NULL:
             io_watcher = <libev.ev_io *>malloc(size=<size_t>sizeof(libev.ev_io))
-        cdef PyIOWatcher py_io_watcher = PyIOWatcher()
+            py_io_watcher._owns_watcher = True
+        else:
+            py_io_watcher._owns_watcher = False
         py_io_watcher.io_watcher = io_watcher
         if callbacks is not None:
             py_io_watcher.callbacks = callbacks
         return py_io_watcher
 
+    def __dealloc__(self):
+        if self._owns_watcher and self.io_watcher != NULL:
+            free(self.io_watcher)
+            self.io_watcher = NULL
+
     @staticmethod
     def _new_from_python_() -> PyIOWatcher:
         return PyIOWatcher._new_()
 
-    cpdef init(self, callbacks: dict[str, Callable[..., Any]], int file_descriptor, int events):
+    def init(self, callbacks: dict[str, Callable[..., Any]], file_descriptor: int, events: int) -> None:
         self.callbacks = callbacks
         self.io_watcher.data = <void *>self.callbacks
         libev.ev_io_init(
             ev_io=self.io_watcher, callback=<libev.io_cb>PyIOWatcher.default_callback, fd=file_descriptor, events=events
         )
 
-    cpdef start(self, PyLoop loop):
+    def start(self, loop: PyLoop) -> None:
         libev.ev_io_start(loop=loop.loop, watcher=self.io_watcher)
 
-    cpdef stop(self, PyLoop loop):
+    def stop(self, loop: PyLoop) -> None:
         libev.ev_io_stop(loop=loop.loop, watcher=self.io_watcher)
 
     @staticmethod
@@ -800,6 +829,7 @@ cdef class PyIOWatcher:
 
 cdef class PySignalWatcher:
     cdef libev.ev_signal *signal_watcher
+    cdef bint _owns_watcher
     _callbacks: dict[str, Callable[..., Any]]
 
     @property
@@ -812,29 +842,39 @@ cdef class PySignalWatcher:
 
     @staticmethod
     cdef PySignalWatcher _new_(libev.ev_signal *signal_watcher = NULL, callbacks: Optional[dict[str, Callable[..., Any]]] = None):
+        cdef PySignalWatcher py_signal_watcher = PySignalWatcher()
         if signal_watcher == NULL:
             signal_watcher = <libev.ev_signal *>malloc(size=<size_t>sizeof(libev.ev_signal))
-        cdef PySignalWatcher py_signal_watcher = PySignalWatcher()
+            py_signal_watcher._owns_watcher = True
+        else:
+            py_signal_watcher._owns_watcher = False
         py_signal_watcher.signal_watcher = signal_watcher
         if callbacks is not None:
             py_signal_watcher.callbacks = callbacks
         return py_signal_watcher
 
+    def __dealloc__(self):
+        if self._owns_watcher and self.signal_watcher != NULL:
+            free(self.signal_watcher)
+            self.signal_watcher = NULL
+
     @staticmethod
     def _new_from_python_() -> PySignalWatcher:
         return PySignalWatcher._new_()
 
-    cpdef init(self, callbacks: dict[str, Callable[..., Any]], int signum):
+    def init(self, callbacks: dict[str, Callable[..., Any]], signal_number: int) -> None:
         self.callbacks = callbacks
         self.signal_watcher.data = <void *>self.callbacks
         libev.ev_signal_init(
-            signal=self.signal_watcher, callback=<libev.signal_cb>PySignalWatcher.default_callback, signum=signum
+            signal=self.signal_watcher,
+            callback=<libev.signal_cb>PySignalWatcher.default_callback,
+            signum=signal_number,
         )
 
-    cpdef start(self, PyLoop loop):
+    def start(self, loop: PyLoop) -> None:
         libev.ev_signal_start(loop=loop.loop, signal=self.signal_watcher)
 
-    cpdef stop(self, PyLoop loop):
+    def stop(self, loop: PyLoop) -> None:
         libev.ev_signal_stop(loop=loop.loop, signal=self.signal_watcher)
 
     @staticmethod
@@ -848,6 +888,7 @@ cdef class PySignalWatcher:
 
 cdef class PyTimerWatcher:
     cdef libev.ev_timer *timer_watcher
+    cdef bint _owns_watcher
     _callbacks: dict[str, Callable[..., Any]]
 
     @property
@@ -860,38 +901,49 @@ cdef class PyTimerWatcher:
 
     @staticmethod
     cdef PyTimerWatcher _new_(libev.ev_timer *timer_watcher = NULL, callbacks: Optional[dict[str, Callable[..., Any]]] = None):
+        cdef PyTimerWatcher py_timer_watcher = PyTimerWatcher()
         if timer_watcher == NULL:
             timer_watcher = <libev.ev_timer *>malloc(size=<size_t>sizeof(libev.ev_timer))
-        cdef PyTimerWatcher py_timer_watcher = PyTimerWatcher()
+            py_timer_watcher._owns_watcher = True
+        else:
+            py_timer_watcher._owns_watcher = False
         py_timer_watcher.timer_watcher = timer_watcher
         if callbacks is not None:
             py_timer_watcher.callbacks = callbacks
         return py_timer_watcher
 
+    def __dealloc__(self):
+        if self._owns_watcher and self.timer_watcher != NULL:
+            free(self.timer_watcher)
+            self.timer_watcher = NULL
+
     @staticmethod
     def _new_from_python_() -> PyTimerWatcher:
         return PyTimerWatcher._new_()
 
-    cpdef init(self, callbacks: dict[str, Callable[..., Any]], float after, float repeat):
+    def init(self, callbacks: dict[str, Callable[..., Any]], after: float, repeat: float) -> None:
         self.callbacks = callbacks
         self.timer_watcher.data = <void *>self.callbacks
         libev.ev_timer_init(
-            timer=self.timer_watcher, callback=<libev.timer_cb>PyTimerWatcher.default_callback, after=<libev.ev_tstamp>after, repeat=<libev.ev_tstamp>repeat
+            timer=self.timer_watcher,
+            callback=<libev.timer_cb>PyTimerWatcher.default_callback,
+            after=<libev.ev_tstamp>after,
+            repeat=<libev.ev_tstamp>repeat,
         )
 
-    cpdef set_timer(self, float after, float repeat):
+    def set_timer(self, after: float, repeat: float) -> None:
         libev.ev_timer_set(timer=self.timer_watcher, after=<libev.ev_tstamp>after, repeat=<libev.ev_tstamp>repeat)
 
-    cpdef start(self, PyLoop loop):
+    def start(self, loop: PyLoop) -> None:
         libev.ev_timer_start(loop=loop.loop, timer=self.timer_watcher)
 
-    cpdef stop(self, PyLoop loop):
+    def stop(self, loop: PyLoop) -> None:
         libev.ev_timer_stop(loop=loop.loop, timer=self.timer_watcher)
 
-    cpdef again(self, PyLoop loop):
+    def again(self, loop: PyLoop) -> None:
         libev.ev_timer_again(loop=loop.loop, timer=self.timer_watcher)
 
-    cpdef float remaining(self, PyLoop loop):
+    def remaining(self, loop: PyLoop) -> float:
         return float(libev.ev_timer_remaining(loop=loop.loop, timer=self.timer_watcher))
     
     @staticmethod
@@ -904,16 +956,77 @@ cdef class PyTimerWatcher:
         )
 
 
+cdef class PyStatWatcher:
+    cdef libev.ev_stat *stat_watcher
+    cdef bint _owns_watcher
+    _callbacks: dict[str, Callable[..., Any]]
+
+    @property
+    def callbacks(self) -> dict[str, Callable[..., Any]]:
+        return self._callbacks
+
+    @callbacks.setter
+    def callbacks(self, callbacks: dict[str, Callable[..., Any]]) -> None:
+        self._callbacks = callbacks
+
+    @staticmethod
+    cdef PyStatWatcher _new_(libev.ev_stat *stat_watcher = NULL, callbacks: Optional[dict[str, Callable[..., Any]]] = None):
+        cdef PyStatWatcher py_stat_watcher = PyStatWatcher()
+        if stat_watcher == NULL:
+            stat_watcher = <libev.ev_stat *>malloc(size=<size_t>sizeof(libev.ev_stat))
+            py_stat_watcher._owns_watcher = True
+        else:
+            py_stat_watcher._owns_watcher = False
+        py_stat_watcher.stat_watcher = stat_watcher
+        if callbacks is not None:
+            py_stat_watcher.callbacks = callbacks
+        return py_stat_watcher
+
+    def __dealloc__(self):
+        if self._owns_watcher and self.stat_watcher != NULL:
+            free(self.stat_watcher)
+            self.stat_watcher = NULL
+
+    @staticmethod
+    def _new_from_python_() -> PyStatWatcher:
+        return PyStatWatcher._new_()
+
+    def init(self, callbacks: dict[str, Callable[..., Any]], path: str, interval: float) -> None:
+        self.callbacks = callbacks
+        self.stat_watcher.data = <void *>self.callbacks
+        libev.ev_stat_init(
+            watcher=self.stat_watcher,
+            callback=<libev.stat_cb>PyStatWatcher.default_callback,
+            path=get_char_from_py_string(string=path),
+            interval=<libev.ev_tstamp>interval,
+        )
+
+    def start(self, loop: PyLoop) -> None:
+        libev.ev_stat_start(loop=loop.loop, watcher=self.stat_watcher)
+
+    def stop(self, loop: PyLoop) -> None:
+        libev.ev_stat_stop(loop=loop.loop, watcher=self.stat_watcher)
+
+    @staticmethod
+    cdef default_callback(libev.ev_loop *ev_loop, libev.ev_stat *stat_watcher, int revents):
+        callbacks_dict: dict[str, Callable[..., Any]] = <dict>stat_watcher.data
+        callbacks_dict["default"](
+            PyLoop._new_(loop=ev_loop),
+            PyStatWatcher._new_(stat_watcher=stat_watcher, callbacks=callbacks_dict),
+            revents
+        )
+
+
 # Enums
 
-class CONSTANTS(pyenum.Enum):
+class CONSTANTS(pyenum.IntEnum):
     CurrentTime = xlib.CurrentTime
     AnyPropertyType = xlib.AnyPropertyType
     NoSymbol = xlib.NoSymbol
     AnyKey = xlib.AnyKey
     XkbUseCoreKbd = xlib.XkbUseCoreKbd
 
-class EVENT_TYPES(pyenum.Enum):
+class EVENT_TYPES(pyenum.IntEnum):
     # Generic event
     GenericEvent = xlib.GenericEvent
     # XErrorEvent
@@ -981,7 +1094,7 @@ class EVENT_TYPES(pyenum.Enum):
     # XKeymapEvent
     KeymapNotify = xlib.KeymapNotify
 
-class INPUT_EVENT_MASKS(pyenum.Enum):
+class INPUT_EVENT_MASKS(pyenum.IntEnum):
     NoEventMask = xlib.NoEventMask
     StructureNotifyMask = xlib.StructureNotifyMask
     SubstructureNotifyMask = xlib.SubstructureNotifyMask
@@ -991,7 +1104,7 @@ class INPUT_EVENT_MASKS(pyenum.Enum):
     KeyPressMask = xlib.KeyPressMask
     KeyReleaseMask = xlib.KeyReleaseMask
 
-class KEY_MASKS(pyenum.Enum):
+class KEY_MASKS(pyenum.IntEnum):
     AnyModifier = xlib.AnyModifier
     Mod1Mask = xlib.Mod1Mask
     ControlMask = xlib.ControlMask
@@ -1000,7 +1113,7 @@ class KEY_MASKS(pyenum.Enum):
     Mod4Mask = xlib.Mod4Mask
     LockMask = xlib.LockMask
 
-class BUTTON_MASKS(pyenum.Enum):
+class BUTTON_MASKS(pyenum.IntEnum):
     AnyModifier = xlib.AnyModifier
     Button1Mask = xlib.Button1Mask
     Button2Mask = xlib.Button2Mask
@@ -1008,18 +1121,18 @@ class BUTTON_MASKS(pyenum.Enum):
     Button4Mask = xlib.Button4Mask
     Button5Mask = xlib.Button5Mask
 
-class BUTTONS(pyenum.Enum):
+class BUTTONS(pyenum.IntEnum):
     Button1 = xlib.Button1
     Button2 = xlib.Button2
     Button3 = xlib.Button3
     Button4 = xlib.Button4
     Button5 = xlib.Button5
 
-class GRAB_MODE(pyenum.Enum):
+class GRAB_MODE(pyenum.IntEnum):
     GrabModeSync = xlib.GrabModeSync
     GrabModeAsync = xlib.GrabModeAsync
 
-class WINDOW_VALUE_MASK(pyenum.Enum):
+class WINDOW_VALUE_MASK(pyenum.IntEnum):
     CWX = xlib.CWX
     CWY = xlib.CWY
     CWWidth = xlib.CWWidth
@@ -1028,35 +1141,35 @@ class WINDOW_VALUE_MASK(pyenum.Enum):
     CWSibling = xlib.CWSibling
     CWStackMode = xlib.CWStackMode
 
-class WINDOW_STACKING_METHOD(pyenum.Enum):
+class WINDOW_STACKING_METHOD(pyenum.IntEnum):
     Above = xlib.Above
     Below = xlib.Below
     TopIf = xlib.TopIf
     BottomIf = xlib.BottomIf
     Opposite = xlib.Opposite
 
-class SET_PROPERTY_MODE(pyenum.Enum):
+class SET_PROPERTY_MODE(pyenum.IntEnum):
     PropModeReplace = xlib.PropModeReplace
     PropModePrepend = xlib.PropModePrepend
     PropModeAppend = xlib.PropModeAppend
 
-class WINDOW_MAP_STATE(pyenum.Enum):
+class WINDOW_MAP_STATE(pyenum.IntEnum):
     IsUnmapped = xlib.IsUnmapped
     IsUnviewable = xlib.IsUnviewable
     IsViewable = xlib.IsViewable
 
-class SCREENSAVER_STATE(pyenum.Enum):
+class SCREENSAVER_STATE(pyenum.IntEnum):
     ScreenSaverOff = xlib.ScreenSaverOff
     ScreenSaverOn = xlib.ScreenSaverOn
     ScreenSaverCycle = xlib.ScreenSaverCycle
     ScreenSaverDisabled = xlib.ScreenSaverDisabled
 
-class SCREENSAVER_KIND(pyenum.Enum):
+class SCREENSAVER_KIND(pyenum.IntEnum):
     ScreenSaverBlanked = xlib.ScreenSaverBlanked
     ScreenSaverInternal = xlib.ScreenSaverInternal
     ScreenSaverExternal = xlib.ScreenSaverExternal
 
-class KB_GROUP_INDEX(pyenum.Enum):
+class KB_GROUP_INDEX(pyenum.IntEnum):
     XkbGroup1Index = xlib.XkbGroup1Index
     XkbGroup2Index = xlib.XkbGroup2Index
     XkbGroup3Index = xlib.XkbGroup3Index
@@ -1064,13 +1177,13 @@ class KB_GROUP_INDEX(pyenum.Enum):
     XkbAnyGroup = xlib.XkbAnyGroup
     XkbAllGroups = xlib.XkbAllGroups
 
-class NOTIFY_MODES(pyenum.Enum):
+class NOTIFY_MODES(pyenum.IntEnum):
     NotifyNormal = xlib.NotifyNormal
     NotifyGrab = xlib.NotifyGrab
     NotifyUngrab = xlib.NotifyUngrab
     NotifyWhileGrabbed = xlib.NotifyWhileGrabbed
 
-class NOTIFY_DETAILS(pyenum.Enum):
+class NOTIFY_DETAILS(pyenum.IntEnum):
     NotifyAncestor = xlib.NotifyAncestor
     NotifyVirtual = xlib.NotifyVirtual
     NotifyInferior = xlib.NotifyInferior
@@ -1080,7 +1193,7 @@ class NOTIFY_DETAILS(pyenum.Enum):
     NotifyPointerRoot = xlib.NotifyPointerRoot
     NotifyDetailNone = xlib.NotifyDetailNone
 
-class PROPERTY_NOTIFICATION(pyenum.Enum):
+class PROPERTY_NOTIFICATION(pyenum.IntEnum):
     PropertyNewValue = xlib.PropertyNewValue
     PropertyDelete = xlib.PropertyDelete
 
@@ -1104,13 +1217,13 @@ class PROPERTY_FORMAT(pyenum.Enum):
                 return member
         raise ValueError(f"The value {value} is not in the enum members")
 
-class DPMS_POWER_LEVEL(pyenum.Enum):
+class DPMS_POWER_LEVEL(pyenum.IntEnum):
     DPMSModeOn = xlib.DPMSModeOn
     DPMSModeStandby = xlib.DPMSModeStandby
     DPMSModeSuspend = xlib.DPMSModeSuspend
     DPMSModeOff = xlib.DPMSModeOff
 
-class PYLOOP_NEW_LOOP_FLAGS(pyenum.Enum):
+class PYLOOP_NEW_LOOP_FLAGS(pyenum.IntEnum):
     EVFLAG_AUTO = libev.EVFLAG_AUTO
     EVFLAG_NOENV = libev.EVFLAG_NOENV
     EVFLAG_FORKCHECK = libev.EVFLAG_FORKCHECK
@@ -1126,17 +1239,17 @@ class PYLOOP_NEW_LOOP_FLAGS(pyenum.Enum):
     EVBACKEND_ALL = libev.EVBACKEND_ALL
     EVBACKEND_MASK = libev.EVBACKEND_MASK
 
-class PYLOOP_RUN_LOOP_FLAGS(pyenum.Enum):
+class PYLOOP_RUN_LOOP_FLAGS(pyenum.IntEnum):
     EVRUN_ALWAYS = 0  # Keep handling events until either no event watchers are active anymore or "ev_break" was called
     EVRUN_ONCE = libev.EVRUN_ONCE
     EVRUN_NOWAIT = libev.EVRUN_NOWAIT
 
-class PYLOOP_BREAK_LOOP_FLAGS(pyenum.Enum):
+class PYLOOP_BREAK_LOOP_FLAGS(pyenum.IntEnum):
     EVBREAK_ALL = libev.EVBREAK_ALL
     EVBREAK_ONE = libev.EVBREAK_ONE
     EVBREAK_CANCEL = libev.EVBREAK_CANCEL
 
-class PYIOWATCHER_INIT_FLAGS(pyenum.Enum):
+class PYIOWATCHER_INIT_FLAGS(pyenum.IntEnum):
     EV_READ = libev.EV_READ
     EV_WRITE = libev.EV_WRITE
     EV_READ_WRITE = libev.EV_READ | libev.EV_WRITE
@@ -1144,60 +1257,58 @@ class PYIOWATCHER_INIT_FLAGS(pyenum.Enum):
 
 # Functions
 
-cdef char *get_char_from_py_string(str string):
-    """Auxiliar function to convert python string to C char *"""
-    cdef bytes py_bytes = string.encode()
-    cdef char *c_string = <char *>py_bytes
-    return c_string
-
-cpdef PyXOpenDisplay(py_display_name: Optional[str]):
+def PyXOpenDisplay(display_name: Optional[str]) -> Optional[PyDisplay]:
     cdef xlib.Display *display
-    cdef char *display_name = NULL
-    if py_display_name is not None:
-        display_name = get_char_from_py_string(string=py_display_name)
-    display = xlib.XOpenDisplay(display_name=display_name)
+    cdef char *display_name_c = NULL
+    if display_name is not None:
+        display_name_c = get_char_from_py_string(string=display_name)
+    display = xlib.XOpenDisplay(display_name=display_name_c)
     if display == NULL:
         return None
     return PyDisplay._new_(display=display)
 
-cpdef PyXCloseDisplay(PyDisplay display):
+def PyXCloseDisplay(display: PyDisplay) -> None:
     if display._display == NULL:
         return
     xlib.XCloseDisplay(display=display._display)
 
-cpdef xlib.Window PyXDefaultRootWindow(PyDisplay display):
+def PyXDefaultRootWindow(display: PyDisplay) -> int:
     return xlib.XDefaultRootWindow(display=display._display)
 
-cpdef int PyXConnectionNumber(PyDisplay display):
+def PyXConnectionNumber(display: PyDisplay) -> int:
     return xlib.XConnectionNumber(display=display._display)
 
-cpdef int PyXGrabKey(
-        PyDisplay display, int keycode, unsigned int modifiers,
-        xlib.Window grab_window, owner_events: bool, int pointer_mode,
-        int keyboard_mode
-    ):
+def PyXGrabKey(
+    display: PyDisplay,
+    keycode: int,
+    modifiers: int,
+    window: int,
+    owner_events: bool,
+    pointer_mode: int,
+    keyboard_mode: int,
+) -> int:
     return xlib.XGrabKey(
         display=display._display,
         keycode=keycode,
         modifiers=modifiers,
-        grab_window=grab_window,
+        grab_window=window,
         owner_events=<int>owner_events,
         pointer_mode=pointer_mode,
-        keyboard_mode=keyboard_mode
+        keyboard_mode=keyboard_mode,
     )
 
-cpdef int PyXUngrabKey(PyDisplay display, int keycode, unsigned int modifiers, xlib.Window window):
+def PyXUngrabKey(display: PyDisplay, keycode: int, modifiers: int, window: int) -> int:
     return xlib.XUngrabKey(display=display._display, keycode=keycode, modifiers=modifiers, window=window)
 
-cpdef int PyXSelectInput(PyDisplay display, xlib.Window window, long event_mask):
+def PyXSelectInput(display: PyDisplay, window: int, event_mask: int) -> int:
     return xlib.XSelectInput(display=display._display, window=window, event_mask=event_mask)
 
-cpdef int PyXConfigureWindow(PyDisplay display, xlib.Window window, unsigned int value_mask, pyXWindowChanges: PyXWindowChanges):
+def PyXConfigureWindow(display: PyDisplay, window: int, value_mask: int, window_changes: PyXWindowChanges) -> int:
     return xlib.XConfigureWindow(
-        display=display._display, window=window, value_mask=value_mask, values=&pyXWindowChanges._xwindowchanges
+        display=display._display, window=window, value_mask=value_mask, values=&window_changes._xwindowchanges
     )
 
-cpdef int PyXSync(PyDisplay display, discard: bool):
+def PyXSync(display: PyDisplay, discard: bool) -> int:
     return xlib.XSync(display=display._display, discard=<int>discard)
 
 # Global reference to python callback
@@ -1211,44 +1322,48 @@ cdef int default_x_error_handler(xlib.Display *display, xlib.XErrorEvent *error_
 
 def PyXSetErrorHandler(
     handler: Callable[[PyDisplay, PyXErrorEvent], None]
-):
+) -> Callable[[PyDisplay, PyXErrorEvent], None]:
     global _pydefault_x_error_handler
     _pydefault_x_error_handler = handler
 
     xlib.XSetErrorHandler(handler=<xlib.XErrorHandler>default_x_error_handler)
     return handler
 
-cpdef xlib.Atom PyXInternAtom(PyDisplay display, str atom_name, only_if_exists: bool):
-    return xlib.XInternAtom(
+def PyXInternAtom(display: PyDisplay, atom_name: str, only_if_exists: bool) -> int:
+    key: tuple[int, str, bool] = (<uintptr_t>display._display, atom_name, only_if_exists)
+    cached: Optional[int] = _intern_cache.get(key)
+    if cached is not None:
+        return cached
+    cdef xlib.Atom atom = xlib.XInternAtom(
         display=display._display, atom_name=get_char_from_py_string(string=atom_name), only_if_exists=<int>only_if_exists
     )
+    if atom != 0 or not only_if_exists:
+        _intern_cache[key] = atom
+    return atom
 
-cpdef PyXGetWindowProperty(PyDisplay display, xlib.Window window, str property_):
-    # Default values
-    cdef long offset = <long>0  # Specifies the offset in the specified property where the data is to be retrieved.
-    cdef long length = <long>1024  # Specifies the length in 32-bit multiples of the data to be retrieved.
-    cdef int delete = <int>False  # Specifies a boolean value that determines whether the property is going to be deleted.
-
-    # Params to C function XGetWindowProperty
+def PyXGetWindowProperty(
+    display: PyDisplay, window: int, property_: str
+) -> Optional[tuple[pyarray.array[int], int, str]]:
+    cdef long offset = <long>0
+    cdef long length = <long>1024
+    cdef int delete = <int>False
     cdef xlib.Atom actual_type_return
     cdef int actual_format_return
     cdef unsigned long nitems_return
     cdef unsigned long bytes_after_return
     cdef unsigned char *prop_return
-
-    buffer_list: list[int] = []  # list containing the final result
-    pyformat: Optional[PROPERTY_FORMAT] = None  # format of the result
-
-    # Pointers to cast the final result to the correct type
-    cdef char *result_as_char
-    cdef short *result_as_short
-    cdef long *result_as_long
+    cdef xlib.Atom property_atom = PyXInternAtom(display=display, atom_name=property_, only_if_exists=False)
+    cdef Py_ssize_t filled = 0
+    cdef Py_ssize_t nitems
+    cdef Py_ssize_t itemsize
+    result_buf: Optional[carray.array] = None
+    pyformat: Optional[PROPERTY_FORMAT] = None
 
     while True:
         xlib.XGetWindowProperty(
             display=display._display,
             window=window,
-            property=PyXInternAtom(display=display, atom_name=property_, only_if_exists=False),
+            property=property_atom,
             offset=offset,
             length=length,
             delete=delete,
@@ -1262,65 +1377,56 @@ cpdef PyXGetWindowProperty(PyDisplay display, xlib.Window window, str property_)
         if not nitems_return:
             return None
         try:
-            # If the returned format is 8, the returned data is represented as a char array.
-    
-            # If the returned format is 16, the returned data is represented as a short array and
-            # should be cast to that type to obtain the elements.
-            
-            # If the returned format is 32, the returned data is represented as a long array and
-            # should be cast to that type to obtain the elements.
             pyformat = PROPERTY_FORMAT.new_from_value(value=actual_format_return)
-            if pyformat == PROPERTY_FORMAT.CHAR:
-                result_as_char = <char *>prop_return
-                for i in range(nitems_return):
-                    buffer_list.append(result_as_char[i])
-                xlib.XFree(data=<void *>result_as_char)
-            elif pyformat == PROPERTY_FORMAT.SHORT:
-                result_as_short = <short *>prop_return
-                for i in range(nitems_return):
-                    buffer_list.append(result_as_short[i])
-                xlib.XFree(data=<void *>result_as_short)
-            elif pyformat == PROPERTY_FORMAT.LONG:
-                result_as_long = <long *>prop_return
-                for i in range(nitems_return):
-                    buffer_list.append(result_as_long[i])
-                xlib.XFree(data=<void *>result_as_long)
+            if result_buf is None:
+                result_buf = pyarray.array(pyformat.value[1])
+            nitems = <Py_ssize_t>nitems_return
+            itemsize = result_buf.itemsize
+            filled += nitems
+            carray.resize(result_buf, filled)
+            memcpy(
+                <char *>result_buf.data.as_voidptr + (filled - nitems) * itemsize,
+                <void *>prop_return,
+                <size_t>(nitems * itemsize),
+            )
+            xlib.XFree(data=<void *>prop_return)
+            prop_return = NULL
         except ValueError:
+            if prop_return != NULL:
+                xlib.XFree(data=<void *>prop_return)
             return None
         if bytes_after_return:
-            xlib.XFree(data=<void *>prop_return)
-            offset = length
-            length = <long>ceil(x=<double>(bytes_after_return / 4 + 1))
+            offset += <long>((nitems_return * actual_format_return + 31) // 32)
+            length = <long>ceil(x=<double>(bytes_after_return / 4.0))
+            if length < 1:
+                length = 1
         else:
             break
-    return (
-        pyarray.array(cast(PROPERTY_FORMAT, pyformat).value[1], buffer_list),
-        actual_type_return,
-        PyXGetAtomName(display=display, atom=actual_type_return).strip()
-    )
+    return (result_buf, actual_type_return, "")
 
-cpdef int PyXChangeProperty(
-    PyDisplay display,
-    xlib.Window window,
-    str property_,
-    xlib.Atom type_,
-    int format_,
-    int mode,
-    data: pyarray.array[int],
-):
-    cdef carray.array data_ = carray.array("B", data.tobytes())  # Array of unsigned char
+def PyXChangeProperty(
+    display: PyDisplay,
+    window: int,
+    property_name: str,
+    atom_type: int,
+    format_: int,
+    mode: int,
+    property_data: pyarray.array[int],
+) -> int:
+    pyformat = PROPERTY_FORMAT.new_from_value(value=format_)
+    cdef carray.array data_ = carray.array(pyformat.value[1], property_data)
     return xlib.XChangeProperty(
         display=display._display,
         window=window,
-        property=PyXInternAtom(display=display, atom_name=property_, only_if_exists=False),
-        type=type_,
+        property=PyXInternAtom(display=display, atom_name=property_name, only_if_exists=False),
+        type=atom_type,
         format=format_,
         mode=mode,
-        data=data_.data.as_uchars,
+        data=<unsigned char *>data_.data.as_voidptr,
         nelements=len(data_)
     )
 
-cpdef PyXGetWindowAttributes(PyDisplay display, xlib.Window window):
+def PyXGetWindowAttributes(display: PyDisplay, window: int) -> Optional[PyXWindowAttributes]:
     cdef xlib.XWindowAttributes window_attributes
     cdef int result = xlib.XGetWindowAttributes(
         display=display._display, window=window, window_attributes_return=&window_attributes
@@ -1329,7 +1435,7 @@ cpdef PyXGetWindowAttributes(PyDisplay display, xlib.Window window):
         return None
     return PyXWindowAttributes._new_(window_attributes=window_attributes)
 
-cpdef PyXQueryTree(PyDisplay display, xlib.Window window):
+def PyXQueryTree(display: PyDisplay, window: int) -> Optional[PyXWindowTree]:
     cdef xlib.Window root_return
     cdef xlib.Window parent_return
     cdef xlib.Window *children_return
@@ -1353,7 +1459,7 @@ cpdef PyXQueryTree(PyDisplay display, xlib.Window window):
         window=window, root=root_return, parent=parent_return, children=children
     )
 
-cpdef PyXGetGeometry(PyDisplay display, xlib.Window window):
+def PyXGetGeometry(display: PyDisplay, window: int) -> Optional[PyXWindowGeometry]:
     cdef xlib.Window root_return
     cdef int x_return, y_return
     cdef unsigned int width_return, height_return
@@ -1380,7 +1486,7 @@ cpdef PyXGetGeometry(PyDisplay display, xlib.Window window):
         depth=depth_return
     )
 
-cpdef PyXScreenSaverQueryInfo(PyDisplay display, xlib.Window window):
+def PyXScreenSaverQueryInfo(display: PyDisplay, window: int) -> Optional[PyXScreenSaverInfo]:
     cdef xlib.XScreenSaverInfo info
     cdef int result = xlib.XScreenSaverQueryInfo(
         display=display._display, drawable=window, saver_info=&info
@@ -1389,35 +1495,42 @@ cpdef PyXScreenSaverQueryInfo(PyDisplay display, xlib.Window window):
         return None
     return PyXScreenSaverInfo._new_(info=info)
 
-cpdef PyXkbStateRec PyXkbGetState(PyDisplay display, int device_spec):
+def PyXkbGetState(display: PyDisplay, device_spec: int) -> PyXkbStateRec:
     cdef xlib.XkbStateRec state
     xlib.XkbGetState(
         display=display._display, device_spec=device_spec, state_return=&state
     )
     return PyXkbStateRec._new_(kb_state=state)
 
-cpdef int PyXkbLockGroup(PyDisplay display, int device_spec, int group):
+def PyXkbLockGroup(display: PyDisplay, device_spec: int, group: int) -> int:
     return xlib.XkbLockGroup(display=display._display, device_spec=device_spec, group=group)
 
-cpdef int PyXFlush(PyDisplay display):
+def PyXFlush(display: PyDisplay) -> int:
     return xlib.XFlush(display=display._display)
 
-cpdef str PyXGetAtomName(PyDisplay display, xlib.Atom atom):
+def PyXGetAtomName(display: PyDisplay, atom: int) -> str:
+    key: tuple[int, int] = (<uintptr_t>display._display, atom)
+    cached: Optional[str] = _atom_name_cache.get(key)
+    if cached is not None:
+        return cached
     cdef char *name = xlib.XGetAtomName(display=display._display, atom=atom)
+    if name == NULL:
+        return ""
     cdef bytes pybytes = <bytes>name
     cdef str result = pybytes.decode().strip()
     xlib.XFree(data=<void *>name)
+    _atom_name_cache[key] = result
     return result
 
-cpdef int PyXSendEvent(
-    PyDisplay display, xlib.Window window, propagate: bool, int event_mask, PyXEvent event
-):
+def PyXSendEvent(
+    display: PyDisplay, window: int, propagate: bool, event_mask: int, xevent: PyXEvent
+) -> int:
     return xlib.XSendEvent(
         display=display._display,
         window=window,
         propagate=<int>propagate,
         event_mask=<long>event_mask,
-        event_send=&event._native_event
+        event_send=&xevent._native_event,
     )
 
 cdef cairo.cairo_status_t writePngStream(void *closure, const unsigned char *data, unsigned int length):
@@ -1428,17 +1541,20 @@ cdef cairo.cairo_status_t writePngStream(void *closure, const unsigned char *dat
     return cairo.cairo_status_t.CAIRO_STATUS_SUCCESS
 
 cdef IconData readSvgIcon(str iconPath):
-    cdef IconData iconData = IconData(length=0, data=NULL)  # type: ignore
+    cdef IconData iconData = IconData(length=0, data=NULL, magick_memory=False)  # type: ignore
     cdef resvg.resvg_options *options = resvg.resvg_options_create()
-    cdef resvg.resvg_render_tree *tree
-    cdef int result = resvg.resvg_parse_tree_from_file(file_path=get_char_from_py_string(string=iconPath), opt=options, tree=&tree)
+    cdef resvg.resvg_render_tree *tree = NULL
+    cdef cairo.cairo_surface_t *surface = NULL
+    cdef int result = resvg.resvg_parse_tree_from_file(
+        file_path=get_char_from_py_string(string=iconPath), opt=options, tree=&tree
+    )
     resvg.resvg_options_destroy(opt=options)
     if result != resvg.resvg_error.RESVG_OK:
         print(f"An error occurred reading the .svg file {iconPath}")
         return iconData
-    
+
     cdef resvg.resvg_size size = resvg.resvg_get_image_size(tree=tree)
-    cdef cairo.cairo_surface_t *surface = cairo.cairo_image_surface_create(
+    surface = cairo.cairo_image_surface_create(
         format=cairo.cairo_format_t.CAIRO_FORMAT_ARGB32, width=<int>size.width, height=<int>size.height
     )
     cdef unsigned char *surface_data = cairo.cairo_image_surface_get_data(surface=surface)
@@ -1463,13 +1579,14 @@ cdef IconData readSvgIcon(str iconPath):
     if cairo.cairo_surface_write_to_png_stream(
         surface=surface, write_func=<cairo.cairo_write_func_t>writePngStream, closure=<void *>&iconData
     ) != cairo.cairo_status_t.CAIRO_STATUS_SUCCESS:
-        iconData.length = 0
-        iconData.data = NULL
+        release_icon_data(&iconData)
 
+    resvg.resvg_tree_destroy(tree=tree)
+    cairo.cairo_surface_destroy(surface=surface)
     return iconData
 
 cdef IconData readIconWithImageMagick(str iconPath):
-    cdef IconData iconData = IconData(length=0, data=NULL)  # type: ignore
+    cdef IconData iconData = IconData(length=0, data=NULL, magick_memory=False)  # type: ignore
     imagemagick.MagickWandGenesis()
     cdef imagemagick.MagickWand *wand = imagemagick.NewMagickWand()
     cdef imagemagick.PixelWand *pixelWand = imagemagick.NewPixelWand()
@@ -1505,8 +1622,9 @@ cdef IconData readIconWithImageMagick(str iconPath):
     cdef unsigned char *iconRawData = imagemagick.MagickGetImageBlob(wand=wand, size=&iconRawDataSize)
     readIconWithImageMagickFinalizer(wand=wand, pixelWand=pixelWand)
 
-    iconData.length=<int>iconRawDataSize
-    iconData.data=iconRawData
+    iconData.length = <int>iconRawDataSize
+    iconData.data = iconRawData
+    iconData.magick_memory = True
     return iconData
 
 cdef readIconWithImageMagickFinalizer(imagemagick.MagickWand *wand, imagemagick.PixelWand *pixelWand):
@@ -1516,9 +1634,9 @@ cdef readIconWithImageMagickFinalizer(imagemagick.MagickWand *wand, imagemagick.
         imagemagick.DestroyPixelWand(wand=pixelWand)
     imagemagick.MagickWandTerminus()
 
-cpdef bint PySetWindowIcon(PyDisplay display, xlib.Window window, filepath: Path) except False:
+def PySetWindowIcon(display: PyDisplay, window: int, filepath: Path) -> bool:
     cdef libgd.gdImagePtr imagePtr = NULL
-    cdef IconData iconData
+    cdef IconData iconData = IconData(length=0, data=NULL, magick_memory=False)  # type: ignore
     icon_read: bool = False
     if filepath.suffix == ".svg":  # Read image with resvg if it has .svg extension or with MagickWand (ImageMagick) for all other extensions
         try:
@@ -1534,18 +1652,22 @@ cpdef bint PySetWindowIcon(PyDisplay display, xlib.Window window, filepath: Path
                 icon_read = True
         except:
             pass
-    
+
     if not icon_read:
-        return <bint>False
+        return False
     if iconData.length and iconData.data != NULL:
-        imagePtr = libgd.gdImageCreateFromPngPtr(size=iconData.length, data=<void *>iconData.data) # Creates imagePtr from png data
+        imagePtr = libgd.gdImageCreateFromPngPtr(size=iconData.length, data=<void *>iconData.data)
+    release_icon_data(&iconData)
     if imagePtr == NULL:
-        return <bint>False
+        return False
 
     cdef int width = libgd.gdImageSX(im=imagePtr)
     cdef int height = libgd.gdImageSY(im=imagePtr)
     cdef unsigned int ndata = (width * height) + 2
     cdef libgd.CARD32 *_net_wm_icon_data = <libgd.CARD32 *>calloc(count=<size_t>ndata, eltsize=<size_t>sizeof(libgd.CARD32))
+    if _net_wm_icon_data == NULL:
+        libgd.gdImageDestroy(im=imagePtr)
+        return False
     _net_wm_icon_data[0] = width
     _net_wm_icon_data[1] = height
     cdef unsigned char *cols = NULL
@@ -1562,12 +1684,9 @@ cpdef bint PySetWindowIcon(PyDisplay display, xlib.Window window, filepath: Path
             cols[1] = libgd.gdImageGreen(im=imagePtr, color=pixcolour)
             cols[2] = libgd.gdImageRed(im=imagePtr, color=pixcolour)
 
-            # Alpha is more difficult
-            alpha = 127 - libgd.gdImageAlpha(im=imagePtr, color=pixcolour) # 0 to 127
-            # Scale it up to 0 to 255; remembering that 2*127 should be max
-            if alpha == 127:
-                alpha *= 2
-            cols[3] = 255 if alpha == 127 else alpha
+            # gd alpha: 0 opaque, 127 transparent -> scale to 0..255 for _NET_WM_ICON
+            alpha = 127 - libgd.gdImageAlpha(im=imagePtr, color=pixcolour)
+            cols[3] = <unsigned char>(255 if alpha >= 127 else (alpha * 255) // 127)
     libgd.gdImageDestroy(im=imagePtr)
 
     # Change icon using _NET_WM_ICON property, data is BGRA
@@ -1585,19 +1704,19 @@ cpdef bint PySetWindowIcon(PyDisplay display, xlib.Window window, filepath: Path
     )
     if result:
         xlib.XFlush(display=display._display)
-    xlib.XFree(data=<void *>_net_wm_icon_data)
-    return <bint>True
+    free(_net_wm_icon_data)
+    return True
 
-cpdef xlib.KeySym PyXStringToKeysym(str string):
+def PyXStringToKeysym(string: str) -> int:
     return xlib.XStringToKeysym(string=get_char_from_py_string(string=string))
 
-cpdef xlib.KeyCode PyXKeysymToKeycode(PyDisplay display, xlib.KeySym keysym):
+def PyXKeysymToKeycode(display: PyDisplay, keysym: int) -> int:
     return xlib.XKeysymToKeycode(display=display._display, keysym=keysym)
 
-cpdef int PyXPending(PyDisplay display):
+def PyXPending(display: PyDisplay) -> int:
     return xlib.XPending(display=display._display)
 
-cpdef PyXNextEvent(PyDisplay display):
+def PyXNextEvent(display: PyDisplay) -> PyXEvent:
     cdef xlib.XEvent event
     xlib.XNextEvent(display=display._display, event_return=&event)
     try:
@@ -1622,14 +1741,14 @@ cpdef PyXNextEvent(PyDisplay display):
     except ValueError:
         return PyXEvent._new_(event=&event)
 
-cpdef PyDPMSInfo PyGetDPMSInfo(PyDisplay display):
+def PyGetDPMSInfo(display: PyDisplay) -> PyDPMSInfo:
     cdef xlib.BOOL state
     cdef xlib.CARD16 power_level
     xlib.DPMSInfo(display=display._display, power_level=&power_level, state=&state)
     return PyDPMSInfo._new_(state=state, power_level=power_level)
 
-cpdef bint PyDPMSEnable(PyDisplay display):
-    return <bint>xlib.DPMSEnable(display=display._display)
+def PyDPMSEnable(display: PyDisplay) -> bool:
+    return bool(xlib.DPMSEnable(display=display._display))
 
-cpdef bint PyDPMSDisable(PyDisplay display):
-    return <bint>xlib.DPMSDisable(display=display._display)
+def PyDPMSDisable(display: PyDisplay) -> bool:
+    return bool(xlib.DPMSDisable(display=display._display))

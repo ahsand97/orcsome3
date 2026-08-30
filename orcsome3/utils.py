@@ -1,32 +1,46 @@
+"""Small helpers used across orcsome3 (singleton, file/process utils)."""
+
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 import tarfile
 from pathlib import Path
-from types import ModuleType
-from typing import IO, Any, Generic, Optional, TypeVar, cast, override
+from typing import IO, Any, ClassVar, Optional, TypeVar, cast
+
+from typing_extensions import override
 
 _T = TypeVar("_T")
 
 
-class Singleton(type, Generic[_T]):
-    """Class used as metaclass to ensure singleton"""
+class SingletonMixin:
+    """Mixin: at most one instance per concrete class."""
 
-    _instances: dict[Singleton[_T], _T] = {}
+    _singletons: ClassVar[dict[type[Any], Any]] = {}
+    _singleton_inited: ClassVar[set[type[Any]]] = set()
 
-    @override
-    def __call__(cls, *args: Any, **kwargs: Any) -> _T:
-        if cls not in cls._instances:
-            cls._instances[cls] = super().__call__(*args, **kwargs)
-        return cls._instances[cls]
+    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+        instance: Any = cls._singletons.get(cls)
+        if instance is None:
+            instance = super().__new__(cls)
+            cls._singletons[cls] = instance
+        return instance
 
     @classmethod
-    def delete_instance(cls, instance: Singleton[_T]) -> None:
-        try:
-            del cls._instances[instance]
-        except KeyError:
-            pass
+    def delete_singleton(cls) -> None:
+        """Drop the cached instance so the next constructor call allocates a new one."""
+        cls._singletons.pop(cls, None)
+        cls._singleton_inited.discard(cls)
+
+    @classmethod
+    def _singleton_init_done(cls) -> bool:
+        """Return True when __init__ should be skipped (already ran for this class)."""
+        if cls in cls._singleton_inited:
+            return True
+        cls._singleton_inited.add(cls)
+        return False
 
 
 class Final(type):
@@ -41,64 +55,16 @@ class Final(type):
         raise AttributeError("Final classes can't be modified.")
 
 
-class CythonWrapper:
-    """Wrapper class to use methods from a cython module (.so)"""
-
-    def __init__(self, cython_module: ModuleType) -> None:
-        self._cython_module: ModuleType = cython_module
-
-    def run_function(self, name: str, params: Optional[list[Any]] = None) -> Any:
-        """
-        Run function from cython module.
-
-        Params:
-        - `name`: Function name
-        - `params`: Params to pass to function. Defaults to `None`
-        """
-        if params is None:
-            return getattr(self._cython_module, name)()
-        return getattr(self._cython_module, name)(*params)
-
-    def get(self, name: str) -> Any:
-        """Get item from module"""
-        return getattr(self._cython_module, name)
-
-
-class CythonClass:
-    """Class used to call methods on cython class instances"""
-
-    def __init__(self, cython_class_instance: object) -> None:
-        self.cython_instance: Optional[object] = cython_class_instance
-
-    def get_attribute(self, attr_name: str) -> Any:
-        if self.cython_instance is None:
-            return None
-        return getattr(self.cython_instance, attr_name)
-
-    def call_function(self, name: str, params: Optional[list[Any]] = None) -> Any:
-        """
-        Run function from cython object.
-
-        Params:
-        - `name`: Function name
-        - `params`: Params to pass to function. Defaults to `None`
-        """
-        if self.cython_instance is None:
-            return None
-        if params is None:
-            return getattr(self.cython_instance, name)()
-        return getattr(self.cython_instance, name)(*params)
-
-
-# Global cache for patterns
 _re_cache: dict[str, re.Pattern[str]] = {}
 
 
 def match_string(pattern: str, string: str) -> bool:
-    """Checks if `string` matches `pattern`"""
-    if not pattern in _re_cache.keys():
-        _re_cache[pattern] = re.compile(pattern=pattern)
-    return bool(re.search(pattern=_re_cache[pattern], string=string))
+    """True if `pattern` (compiled regex, cached) searches anywhere in `string`."""
+    compiled: Optional[re.Pattern[str]] = _re_cache.get(pattern)
+    if compiled is None:
+        compiled = re.compile(pattern=pattern)
+        _re_cache[pattern] = compiled
+    return compiled.search(string=string) is not None
 
 
 def rmdir(*directories: Path) -> None:
@@ -122,6 +88,8 @@ def run_command_and_show_output(command: str, cwd: Optional[Path] = None) -> Non
         for line in cast(IO[str], sp.stdout):
             print(line.replace("\n", ""), flush=True)
         _ = sp.wait()
+        if sp.returncode:
+            raise subprocess.CalledProcessError(returncode=sp.returncode, cmd=command)
 
 
 def execfile(filepath: Path, globals_: Optional[dict[str, Any]] = None) -> None:
@@ -176,8 +144,11 @@ def extract_tar_strip_components(tar_path: Path, destination_path: Path, strip_c
             if member.isreg():  # Only extract regular files
                 fsrc: Optional[IO[bytes]] = tar.extractfile(member=member)
                 if fsrc is not None:  # Ensure fsrc is not None for empty files/symlinks treated as regular
-                    with absolute_dest_path.open(mode="wb") as fdst:
-                        _ = fdst.write(fsrc.read())
+                    with fsrc, absolute_dest_path.open(mode="wb") as fdst:
+                        shutil.copyfileobj(fsrc=fsrc, fdst=fdst)
+                    absolute_dest_path.chmod(mode=member.mode & 0o777)
+                    # Keep tarball mtimes so autotools does not rebuild Makefile.in (needs automake).
+                    os.utime(absolute_dest_path, times=(member.mtime, member.mtime))
             elif member.issym():
                 # Handle symbolic links: create a symlink at the destination
                 link_target: Path = Path(member.linkname)
@@ -190,7 +161,7 @@ def extract_tar_strip_components(tar_path: Path, destination_path: Path, strip_c
                 # Create the symlink
                 if not absolute_dest_path.exists():  # Avoid overwriting if it exists
                     try:
-                        link_target.symlink_to(target=absolute_dest_path)
+                        absolute_dest_path.symlink_to(target=link_target)
                     except OSError as e:
                         print(f"Could not create symlink for {member.name} -> {member.linkname}: {e}")
             elif member.islnk():
@@ -212,7 +183,9 @@ def extract_tar_strip_components(tar_path: Path, destination_path: Path, strip_c
                         )
                         fsrc = tar.extractfile(member=member)
                         if fsrc is not None:
-                            with absolute_dest_path.open(mode="wb") as fdst:
-                                _ = fdst.write(fsrc.read())
+                            with fsrc, absolute_dest_path.open(mode="wb") as fdst:
+                                shutil.copyfileobj(fsrc=fsrc, fdst=fdst)
+                            absolute_dest_path.chmod(mode=member.mode & 0o777)
+                            os.utime(absolute_dest_path, times=(member.mtime, member.mtime))
                     except Exception as e:
                         print(f"Could not handle hard link for {member.name}: {e}")

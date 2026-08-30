@@ -1,3 +1,5 @@
+"""Desktop notifications via the Freedesktop `org.freedesktop.Notifications` D-Bus interface."""
+
 from __future__ import annotations
 
 import asyncio
@@ -6,14 +8,14 @@ import threading
 from concurrent.futures import Future
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Optional, Union, cast, override
+from typing import Any, Callable, Optional, Union, cast
 
 from dbus_next.aio.message_bus import MessageBus
-from dbus_next.aio.proxy_object import ProxyInterface, ProxyObject
 from dbus_next.signature import Variant
+from typing_extensions import override
 
 from orcsome3.common import APPNAME
-from orcsome3.utils import Singleton
+from orcsome3.utils import SingletonMixin
 
 # Globals
 _logger: logging.Logger = logging.getLogger(name=__name__)
@@ -21,7 +23,7 @@ _visible_notifications: dict[int, Notification] = {}
 
 
 class CONSTANTS(str, Enum):
-    """Constants"""
+    """D-Bus well-known name, object path, and interface for desktop notifications."""
 
     NOTIFICATIONS_BUS_NAME = "org.freedesktop.Notifications"
     NOTIFICATIONS_OBJECT_PATH = "/org/freedesktop/Notifications"
@@ -67,13 +69,14 @@ class ServerCapabilities(str, Enum):
     SOUND = "sound"
 
 
-class NotificationBus(threading.Thread, metaclass=Singleton["NotificationBus"]):
+class NotificationBus(threading.Thread, SingletonMixin):
     """Class wrapper mainly to call methods from Desktop Notifications Specification D-Bus Protocol (`org.freedesktop.Notifications`)."""
 
-    session_bus: Optional[MessageBus] = None
-    notification_proxy: Optional[ProxyObject] = None
-    notification_interface: Optional[ProxyInterface] = None
+    session_bus: Optional[Any] = None
+    notification_proxy: Optional[Any] = None
+    notification_interface: Optional[Any] = None
     can_show_notifications: bool = False
+    _dbus_methods: dict[str, Callable[..., Any]]
 
     class ReasonNotificationClosed(int, Enum):
         """
@@ -91,8 +94,12 @@ class NotificationBus(threading.Thread, metaclass=Singleton["NotificationBus"]):
         UNDEFINED = 4
 
     def __init__(self) -> None:
+        """Connect the session bus, introspect Notifications, then start the asyncio thread."""
+        if type(self)._singleton_init_done():
+            return
         try:
             super().__init__(daemon=True)
+            self._dbus_methods = {}
             self._event_loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop=self._event_loop)
             self._event_loop.run_until_complete(future=NotificationBus.initialize_notification_bus())
@@ -108,9 +115,9 @@ class NotificationBus(threading.Thread, metaclass=Singleton["NotificationBus"]):
         if self.session_bus is None:
             return
 
-        # Connect to signals
-        self.connect_to_signal(signal_name="NotificationClosed", callback=self._on_notification_closed)
-        self.connect_to_signal(signal_name="ActionInvoked", callback=self._on_action_invoked)
+        if self.notification_interface is not None:
+            self.connect_to_signal(signal_name="NotificationClosed", callback=self._on_notification_closed)
+            self.connect_to_signal(signal_name="ActionInvoked", callback=self._on_action_invoked)
         self._event_loop.run_forever()
 
         # Loop forever until disconnection from the bus
@@ -118,26 +125,39 @@ class NotificationBus(threading.Thread, metaclass=Singleton["NotificationBus"]):
 
     @classmethod
     async def initialize_notification_bus(cls) -> None:
+        """Connect to the session bus, bind Notifications if present, then export the SNI tray."""
         cls.session_bus = await MessageBus().connect()
-        cls.notification_proxy = cls.session_bus.get_proxy_object(
-            bus_name=CONSTANTS.NOTIFICATIONS_BUS_NAME.value,
-            path=CONSTANTS.NOTIFICATIONS_OBJECT_PATH,
-            introspection=await cls.session_bus.introspect(
-                bus_name=CONSTANTS.NOTIFICATIONS_BUS_NAME, path=CONSTANTS.NOTIFICATIONS_OBJECT_PATH
-            ),
-        )
-        cls.notification_interface = cls.notification_proxy.get_interface(name=CONSTANTS.NOTIFICATIONS_INTERFACE)
-        cls.can_show_notifications = True
+        try:
+            cls.notification_proxy = cls.session_bus.get_proxy_object(
+                bus_name=CONSTANTS.NOTIFICATIONS_BUS_NAME.value,
+                path=CONSTANTS.NOTIFICATIONS_OBJECT_PATH,
+                introspection=await cls.session_bus.introspect(
+                    bus_name=CONSTANTS.NOTIFICATIONS_BUS_NAME, path=CONSTANTS.NOTIFICATIONS_OBJECT_PATH
+                ),
+            )
+            cls.notification_interface = cls.notification_proxy.get_interface(name=CONSTANTS.NOTIFICATIONS_INTERFACE)
+            cls.can_show_notifications = True
+        except Exception as e:
+            _logger.warning(msg=f"Desktop notifications unavailable: {e}")
+            cls.can_show_notifications = False
+        try:
+            from orcsome3.tray import start_status_notifier
+
+            await start_status_notifier(bus=cls.session_bus)
+        except Exception as e:
+            _logger.warning(msg=f"Status notifier tray unavailable: {e}")
 
     @classmethod
     def stop(cls) -> None:
+        """Disconnect the session bus (does not join the thread)."""
         if cls.session_bus is not None:
             cls.session_bus.disconnect()
 
     @classmethod
     def restart(cls) -> None:
-        cls.delete_instance(instance=NotificationBus)
-        _ = super().__new__(cls=cls)
+        """Drop the singleton and construct a new bus thread (used after a missing Notifications service)."""
+        cls.delete_singleton()
+        _ = cls()
 
     def run_method(self, method_name: str, params: Optional[list[Any]] = None, wait_for_result: bool = True) -> Any:
         """
@@ -146,18 +166,29 @@ class NotificationBus(threading.Thread, metaclass=Singleton["NotificationBus"]):
         Params:
         - `method_name`: Method name
         - `params`: Params to pass to method. Defaults to `None`
-        - `wait_for_result`: Wether to return the result of `method_name` or an instance of `concurrent.futures.Future`.
+        - `wait_for_result`: Whether to return the result of `method_name` or an instance of `concurrent.futures.Future`.
                              Defaults to `True`
         """
+
+        if self.notification_interface is None:
+            return
+
+        cached_method: Optional[Callable[..., Any]] = self._dbus_methods.get(method_name)
+        if cached_method is None:
+            snake_case_method_name: str = getattr(self.notification_interface, "_to_snake_case")(member=method_name)
+            method: Callable[..., Any] = getattr(self.notification_interface, f"call_{snake_case_method_name}")
+            self._dbus_methods[method_name] = method
+        else:
+            method = cached_method
 
         async def run_method_() -> Any:
             """Run method from dbus interface and wait for result"""
             try:
                 result: Any = None
                 if params is None:
-                    result = await getattr(self.notification_interface, f"call_{snake_case_method_name}")()
+                    result = await method()
                 else:
-                    result = await getattr(self.notification_interface, f"call_{snake_case_method_name}")(*params)
+                    result = await method(*params)
                 return result
             except Exception as e:
                 _logger.error(msg=f"An exception occured running method '{method_name}' from dbus interface: {e}")
@@ -165,10 +196,6 @@ class NotificationBus(threading.Thread, metaclass=Singleton["NotificationBus"]):
                     if len(_visible_notifications):
                         _visible_notifications.clear()
 
-        if not hasattr(self, "interface"):
-            return
-
-        snake_case_method_name: str = getattr(self.notification_interface, "_to_snake_case")(member=method_name)
         future: Future[Any] = asyncio.run_coroutine_threadsafe(coro=run_method_(), loop=self._event_loop)
         return future.result() if wait_for_result else future
 
@@ -241,7 +268,10 @@ class NotificationBus(threading.Thread, metaclass=Singleton["NotificationBus"]):
 
 
 class Notification:
-    """Class representation of a notification"""
+    """Freedesktop desktop notification.
+
+    Call `show()` to send it. Duplicate summary/body/app_name replaces the visible one.
+    """
 
     notification_bus: Optional[NotificationBus] = None
 
@@ -366,7 +396,7 @@ class Notification:
                 The `y` hint must also be specified.
             - `y`: Specifies the Y location on the screen that the notification should point to.
                 The `x` hint must also be specified.
-            - `urgency`: Urgency Level. See enum `orcsome3.notify.Notifications.Hints.Urgency`
+            - `urgency`: Urgency Level. See enum `orcsome3.notify.Notification.Hints.Urgency`
             """
             self.action_icons: Optional[bool] = action_icons
             self.category: Optional[Notification.Hints.Categories] = category
@@ -381,6 +411,7 @@ class Notification:
             self.urgency: Optional[Notification.Hints.Urgency] = urgency
 
         def get_dict(self) -> dict[str, Variant]:
+            """Hints as D-Bus variants (`action_icons` → `action-icons`, enums/paths unwrapped)."""
             final_dict: dict[str, Variant] = {}
             attrs: list[str] = [
                 "action_icons",
@@ -396,7 +427,7 @@ class Notification:
                 "urgency",
             ]
             for attr in attrs:
-                value = getattr(self, attr)
+                value: Any = getattr(self, attr)
                 if value is not None:
                     if isinstance(value, Enum):
                         value = value.value
@@ -431,7 +462,6 @@ class Notification:
         hints: Optional[Hints] = None,
         expire_timeout: int = -1,
         on_close: Optional[Callable[[], None]] = None,
-        show: bool = False,
     ) -> None:
         """
         Create a Notification.
@@ -461,7 +491,6 @@ class Notification:
                             If `-1`, the notification's expiration time is dependent on the notification server's settings,
                             and may vary for the type of notification. If `0`, never expire.
         - `on_close`: Optional function to run when closing the notification. Defaults to `None`.
-        - `show`: Wether to show or not the notification immediately. See method `show()` for more details. Defaults to `False`.
         """
         self.id: int = -1
         self.summary: str = summary.lstrip("-")
@@ -474,19 +503,20 @@ class Notification:
         self._hints: Optional[Notification.Hints] = hints
         self._expire_timeout: int = expire_timeout
         self.on_close: Optional[Callable[[], None]] = on_close
-        if show:
-            self.show()
 
     @property
     def actions(self) -> list[Notification.Action]:
+        """Buttons shown on the notification (id + visible name + optional callback)."""
         return self._actions
 
     @property
     def app_icon(self) -> Union[str, Path]:
+        """Icon path or name passed to Notify; empty string if unset when showing."""
         return cast(Union[str, Path], self._app_icon)
 
     @property
     def hints(self) -> Notification.Hints:
+        """Optional hints object; `show()` sends `{}` when this was not set."""
         return cast(Notification.Hints, self._hints)
 
     def __getattr__(self, __name: str) -> Any:
@@ -546,7 +576,7 @@ class Notification:
             _visible_notifications[self.id] = self
 
     def close(self) -> None:
-        """Close notification"""
+        """Ask the server to close this notification (`CloseNotification`)."""
         if not (self.notification_bus is not None and self.notification_bus.can_show_notifications):
             return
         if self.id != -1:

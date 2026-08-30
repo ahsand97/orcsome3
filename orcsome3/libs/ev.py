@@ -1,3 +1,5 @@
+"""Thin Python wrappers around libev (loop + IO / signal / timer watchers) via orcsome3_backend."""
+
 from __future__ import annotations
 
 import time
@@ -5,212 +7,201 @@ from enum import Enum
 from signal import Signals
 from typing import Callable, Optional, Union
 
-# Try to import shared library orcsome3_backend.cpython-xxx-x86_64-linux-gnu.so, it looks for standard locations at sys.path,
-# to specify another location use env var PYTHONPATH (PYTHONPATH="/custom/dir:$PYTHONPATH")
-import orcsome3_backend  # pyright: ignore[reportMissingImports]
-
-from orcsome3.utils import CythonClass, CythonWrapper, Final
-
-# Globals
-_cython_wrapper: CythonWrapper = CythonWrapper(cython_module=orcsome3_backend)  # Global Cython Wrapper instance
+import orcsome3_backend
+from orcsome3.utils import Final
 
 
 class TYPES(metaclass=Final):
-    """Class wrappers for Cython objects"""
+    """Type aliases for Cython objects."""
 
-    class Cython_Loop(CythonClass):
-        cython_class: object = _cython_wrapper.get(name="PyLoop")
-
-        def __init__(self, cython_instance: object) -> None:
-            super().__init__(cython_class_instance=cython_instance)
-
-    class Cython_IOWatcher(CythonClass):
-        cython_class: object = _cython_wrapper.get(name="PyIOWatcher")
-
-        def __init__(self, cython_instance: object) -> None:
-            super().__init__(cython_class_instance=cython_instance)
-
-    class Cython_SignalWatcher(CythonClass):
-        cython_class: object = _cython_wrapper.get(name="PySignalWatcher")
-
-        def __init__(self, cython_instance: object) -> None:
-            super().__init__(cython_class_instance=cython_instance)
-
-    class Cython_TimerWatcher(CythonClass):
-        cython_class: object = _cython_wrapper.get(name="PyTimerWatcher")
-
-        def __init__(self, cython_instance: object) -> None:
-            super().__init__(cython_class_instance=cython_instance)
+    Cython_Loop: type = orcsome3_backend.PyLoop
+    Cython_IOWatcher: type = orcsome3_backend.PyIOWatcher
+    Cython_SignalWatcher: type = orcsome3_backend.PySignalWatcher
+    Cython_TimerWatcher: type = orcsome3_backend.PyTimerWatcher
+    Cython_StatWatcher: type = orcsome3_backend.PyStatWatcher
 
 
 class Loop:
-    """
-    Class Loop, use method `new` to instantiate it and method `new_from_cython_loop` to instantiate it from a `TYPES.Cython_Loop` object.
-    """
+    """libev event loop wrapper."""
 
-    cython_loop: Optional[TYPES.Cython_Loop] = None
+    cython_loop: Optional[orcsome3_backend.PyLoop] = None
 
     class NewLoopFlags(int, Enum):
-        EVFLAG_AUTO = int(_cython_wrapper.get(name="PYLOOP_NEW_LOOP_FLAGS").EVFLAG_AUTO.value)
-        EVFLAG_NOENV = int(_cython_wrapper.get(name="PYLOOP_NEW_LOOP_FLAGS").EVFLAG_NOENV.value)
-        EVFLAG_FORKCHECK = int(_cython_wrapper.get(name="PYLOOP_NEW_LOOP_FLAGS").EVFLAG_FORKCHECK.value)
-        EVFLAG_NOINOTIFY = int(_cython_wrapper.get(name="PYLOOP_NEW_LOOP_FLAGS").EVFLAG_NOINOTIFY.value)
-        EVFLAG_SIGNALFD = int(_cython_wrapper.get(name="PYLOOP_NEW_LOOP_FLAGS").EVFLAG_SIGNALFD.value)
-        EVFLAG_NOSIGMASK = int(_cython_wrapper.get(name="PYLOOP_NEW_LOOP_FLAGS").EVFLAG_NOSIGMASK.value)
-        EVBACKEND_SELECT = int(_cython_wrapper.get(name="PYLOOP_NEW_LOOP_FLAGS").EVBACKEND_SELECT.value)
-        EVBACKEND_POLL = int(_cython_wrapper.get(name="PYLOOP_NEW_LOOP_FLAGS").EVBACKEND_POLL.value)
-        EVBACKEND_EPOLL = int(_cython_wrapper.get(name="PYLOOP_NEW_LOOP_FLAGS").EVBACKEND_EPOLL.value)
-        EVBACKEND_KQUEUE = int(_cython_wrapper.get(name="PYLOOP_NEW_LOOP_FLAGS").EVBACKEND_KQUEUE.value)
-        EVBACKEND_DEVPOLL = int(_cython_wrapper.get(name="PYLOOP_NEW_LOOP_FLAGS").EVBACKEND_DEVPOLL.value)
-        EVBACKEND_PORT = int(_cython_wrapper.get(name="PYLOOP_NEW_LOOP_FLAGS").EVBACKEND_PORT.value)
-        EVBACKEND_ALL = int(_cython_wrapper.get(name="PYLOOP_NEW_LOOP_FLAGS").EVBACKEND_ALL.value)
-        EVBACKEND_MASK = int(_cython_wrapper.get(name="PYLOOP_NEW_LOOP_FLAGS").EVBACKEND_MASK.value)
+        EVFLAG_AUTO = orcsome3_backend.PYLOOP_NEW_LOOP_FLAGS.EVFLAG_AUTO
+        EVFLAG_NOENV = orcsome3_backend.PYLOOP_NEW_LOOP_FLAGS.EVFLAG_NOENV
+        EVFLAG_FORKCHECK = orcsome3_backend.PYLOOP_NEW_LOOP_FLAGS.EVFLAG_FORKCHECK
+        EVFLAG_NOINOTIFY = orcsome3_backend.PYLOOP_NEW_LOOP_FLAGS.EVFLAG_NOINOTIFY
+        EVFLAG_SIGNALFD = orcsome3_backend.PYLOOP_NEW_LOOP_FLAGS.EVFLAG_SIGNALFD
+        EVFLAG_NOSIGMASK = orcsome3_backend.PYLOOP_NEW_LOOP_FLAGS.EVFLAG_NOSIGMASK
+        EVBACKEND_SELECT = orcsome3_backend.PYLOOP_NEW_LOOP_FLAGS.EVBACKEND_SELECT
+        EVBACKEND_POLL = orcsome3_backend.PYLOOP_NEW_LOOP_FLAGS.EVBACKEND_POLL
+        EVBACKEND_EPOLL = orcsome3_backend.PYLOOP_NEW_LOOP_FLAGS.EVBACKEND_EPOLL
+        EVBACKEND_KQUEUE = orcsome3_backend.PYLOOP_NEW_LOOP_FLAGS.EVBACKEND_KQUEUE
+        EVBACKEND_DEVPOLL = orcsome3_backend.PYLOOP_NEW_LOOP_FLAGS.EVBACKEND_DEVPOLL
+        EVBACKEND_PORT = orcsome3_backend.PYLOOP_NEW_LOOP_FLAGS.EVBACKEND_PORT
+        EVBACKEND_ALL = orcsome3_backend.PYLOOP_NEW_LOOP_FLAGS.EVBACKEND_ALL
+        EVBACKEND_MASK = orcsome3_backend.PYLOOP_NEW_LOOP_FLAGS.EVBACKEND_MASK
 
     class RunFlags(int, Enum):
-        EVRUN_ALWAYS = int(_cython_wrapper.get(name="PYLOOP_RUN_LOOP_FLAGS").EVRUN_ALWAYS.value)
-        EVRUN_ONCE = int(_cython_wrapper.get(name="PYLOOP_RUN_LOOP_FLAGS").EVRUN_ONCE.value)
-        EVRUN_NOWAIT = int(_cython_wrapper.get(name="PYLOOP_RUN_LOOP_FLAGS").EVRUN_NOWAIT.value)
+        EVRUN_ALWAYS = orcsome3_backend.PYLOOP_RUN_LOOP_FLAGS.EVRUN_ALWAYS
+        EVRUN_ONCE = orcsome3_backend.PYLOOP_RUN_LOOP_FLAGS.EVRUN_ONCE
+        EVRUN_NOWAIT = orcsome3_backend.PYLOOP_RUN_LOOP_FLAGS.EVRUN_NOWAIT
 
     class BreakFlags(int, Enum):
-        EVBREAK_ALL = int(_cython_wrapper.get(name="PYLOOP_BREAK_LOOP_FLAGS").EVBREAK_ALL.value)
-        EVBREAK_ONE = int(_cython_wrapper.get(name="PYLOOP_BREAK_LOOP_FLAGS").EVBREAK_ONE.value)
-        EVBREAK_CANCEL = int(_cython_wrapper.get(name="PYLOOP_BREAK_LOOP_FLAGS").EVBREAK_CANCEL.value)
+        EVBREAK_ALL = orcsome3_backend.PYLOOP_BREAK_LOOP_FLAGS.EVBREAK_ALL
+        EVBREAK_ONE = orcsome3_backend.PYLOOP_BREAK_LOOP_FLAGS.EVBREAK_ONE
+        EVBREAK_CANCEL = orcsome3_backend.PYLOOP_BREAK_LOOP_FLAGS.EVBREAK_CANCEL
 
     @classmethod
-    def new(cls, init_flags: Union[NewLoopFlags, list[NewLoopFlags]] = NewLoopFlags.EVBACKEND_SELECT) -> Loop:
-        cython_loop: TYPES.Cython_Loop = TYPES.Cython_Loop(
-            cython_instance=getattr(TYPES.Cython_Loop.cython_class, "_new_from_python_")(
-                [x.value for x in init_flags] if isinstance(init_flags, list) else init_flags.value
-            )
+    def new(cls, init_flags: Union[NewLoopFlags, list[NewLoopFlags]] = NewLoopFlags.EVFLAG_AUTO) -> Loop:
+        """Allocate a libev loop. Default backend is `EVFLAG_AUTO` (epoll on Linux)."""
+        flags: Union[int, list[int]] = (
+            [x.value for x in init_flags] if isinstance(init_flags, list) else init_flags.value
         )
+        cython_loop: orcsome3_backend.PyLoop = orcsome3_backend.PyLoop._new_from_python_(flags=flags)
         return cls.new_from_cython_loop(cython_loop=cython_loop)
 
     @classmethod
-    def new_from_cython_loop(cls, cython_loop: TYPES.Cython_Loop) -> Loop:
+    def new_from_cython_loop(cls, cython_loop: orcsome3_backend.PyLoop) -> Loop:
+        """Wrap an existing Cython loop object (used from watcher callbacks)."""
         loop: Loop = cls()
         loop.cython_loop = cython_loop
         return loop
 
     def run(self, run_flags: Union[RunFlags, list[RunFlags]] = RunFlags.EVRUN_ALWAYS) -> None:
+        """Enter the loop. `EVRUN_ALWAYS` blocks until `break_()`."""
         if self.cython_loop is not None:
-            self.cython_loop.call_function(
-                name="run", params=[[x.value for x in run_flags] if isinstance(run_flags, list) else run_flags.value]
+            flags: Union[int, list[int]] = (
+                [x.value for x in run_flags] if isinstance(run_flags, list) else run_flags.value
             )
+            self.cython_loop.run(flags=flags)
 
     def break_(self, how: BreakFlags) -> None:
+        """Stop `run()`. Named `break_` because `break` is a keyword."""
         if self.cython_loop is not None:
-            self.cython_loop.call_function(name="break_", params=[how.value])
+            self.cython_loop.break_(how_to_break_flag=how.value)
 
     def destroy(self) -> None:
+        """Free the native loop. Further `run()` / `break_()` calls are no-ops."""
         if self.cython_loop is not None:
-            self.cython_loop.call_function(name="destroy")
+            self.cython_loop.destroy()
+            self.cython_loop = None
 
 
 class IOWatcher:
-    """
-    Class IOWatcher, use method `new` to instantiate it and method `new_from_cython_io_watcher` to instantiate it from a `TYPES.Cython_IO_Watcher` object.
-    """
+    """File-descriptor watcher."""
 
-    cython_io_watcher: Optional[TYPES.Cython_IOWatcher] = None
+    cython_io_watcher: Optional[orcsome3_backend.PyIOWatcher] = None
 
     class Events(int, Enum):
-        EV_READ = int(_cython_wrapper.get(name="PYIOWATCHER_INIT_FLAGS").EV_READ.value)
-        EV_WRITE = int(_cython_wrapper.get(name="PYIOWATCHER_INIT_FLAGS").EV_WRITE.value)
-        EV_READ_WRITE = int(_cython_wrapper.get(name="PYIOWATCHER_INIT_FLAGS").EV_READ_WRITE.value)
+        EV_READ = orcsome3_backend.PYIOWATCHER_INIT_FLAGS.EV_READ
+        EV_WRITE = orcsome3_backend.PYIOWATCHER_INIT_FLAGS.EV_WRITE
+        EV_READ_WRITE = orcsome3_backend.PYIOWATCHER_INIT_FLAGS.EV_READ_WRITE
 
     @classmethod
     def new(cls, callback: Callable[[Loop, IOWatcher, int], None], file_descriptor: int, event: Events) -> IOWatcher:
-        cython_io_watcher: TYPES.Cython_IOWatcher = TYPES.Cython_IOWatcher(
-            cython_instance=getattr(TYPES.Cython_IOWatcher.cython_class, "_new_from_python_")()
-        )
-        cython_io_watcher.call_function(
-            name="init",
-            params=[{"default": IOWatcher.default_callback, "user_callback": callback}, file_descriptor, event.value],
+        """Watch `file_descriptor` for `event` (read/write). `callback(loop, watcher, revents)`."""
+        cython_io_watcher: orcsome3_backend.PyIOWatcher = orcsome3_backend.PyIOWatcher._new_from_python_()
+        cython_io_watcher.init(
+            callbacks={"default": IOWatcher.default_callback, "user_callback": callback},
+            file_descriptor=file_descriptor,
+            events=event.value,
         )
         return cls.new_from_cython_io_watcher(cython_io_watcher=cython_io_watcher)
 
     @classmethod
-    def new_from_cython_io_watcher(cls, cython_io_watcher: TYPES.Cython_IOWatcher) -> IOWatcher:
+    def new_from_cython_io_watcher(cls, cython_io_watcher: orcsome3_backend.PyIOWatcher) -> IOWatcher:
+        """Wrap an existing Cython IO watcher."""
         io_watcher: IOWatcher = cls()
         io_watcher.cython_io_watcher = cython_io_watcher
         return io_watcher
 
     @staticmethod
-    def default_callback(native_cython_loop: object, native_cython_io_watcher: object, revents: int) -> None:
-        cython_loop: TYPES.Cython_Loop = TYPES.Cython_Loop(cython_instance=native_cython_loop)
-        cython_io_watcher: TYPES.Cython_IOWatcher = TYPES.Cython_IOWatcher(cython_instance=native_cython_io_watcher)
-        py_loop: Loop = Loop.new_from_cython_loop(cython_loop=cython_loop)
-        py_io_watcher: IOWatcher = IOWatcher.new_from_cython_io_watcher(cython_io_watcher=cython_io_watcher)
-        if py_io_watcher.cython_io_watcher is not None:
-            py_io_watcher.cython_io_watcher.get_attribute(attr_name="callbacks")["user_callback"](
-                py_loop, py_io_watcher, revents
-            )
+    def default_callback(
+        native_cython_loop: orcsome3_backend.PyLoop,
+        native_cython_io_watcher: orcsome3_backend.PyIOWatcher,
+        revents: int,
+    ) -> None:
+        """Native → Python adapter; invokes the user callback stored on the Cython watcher."""
+        py_loop: Loop = Loop.new_from_cython_loop(cython_loop=native_cython_loop)
+        py_io_watcher: IOWatcher = IOWatcher.new_from_cython_io_watcher(cython_io_watcher=native_cython_io_watcher)
+        watcher: Optional[orcsome3_backend.PyIOWatcher] = py_io_watcher.cython_io_watcher
+        if watcher is not None:
+            watcher.callbacks["user_callback"](py_loop, py_io_watcher, revents)
 
     def start(self, loop: Loop) -> None:
+        """Start watching on `loop`."""
         if self.cython_io_watcher is not None and loop.cython_loop is not None:
-            self.cython_io_watcher.call_function(name="start", params=[loop.cython_loop.cython_instance])
+            self.cython_io_watcher.start(loop=loop.cython_loop)
 
     def stop(self, loop: Loop) -> None:
+        """Stop watching on `loop` (watcher can be started again)."""
         if self.cython_io_watcher is not None and loop.cython_loop is not None:
-            self.cython_io_watcher.call_function(name="stop", params=[loop.cython_loop.cython_instance])
+            self.cython_io_watcher.stop(loop=loop.cython_loop)
+
+    def close(self, loop: Loop) -> None:
+        """Stop and drop the native watcher."""
+        self.stop(loop=loop)
+        self.cython_io_watcher = None
 
 
 class SignalWatcher:
-    """
-    Class SignalWatcher, use method `new` to instantiate it and method
-    `new_from_cython_signal_watcher` to instantiate it from a `TYPES.Cython_Signal_Watcher` object.
-    """
+    """Signal watcher."""
 
-    cython_signal_watcher: Optional[TYPES.Cython_SignalWatcher] = None
+    cython_signal_watcher: Optional[orcsome3_backend.PySignalWatcher] = None
 
     @classmethod
     def new(cls, callback: Callable[[Loop, SignalWatcher, int], None], signal_number: Signals) -> SignalWatcher:
-        cython_signal_watcher: TYPES.Cython_SignalWatcher = TYPES.Cython_SignalWatcher(
-            cython_instance=getattr(TYPES.Cython_SignalWatcher.cython_class, "_new_from_python_")()
-        )
-        cython_signal_watcher.call_function(
-            name="init",
-            params=[{"default": SignalWatcher.default_callback, "user_callback": callback}, signal_number.value],
+        """Watch POSIX `signal_number`. `callback(loop, watcher, revents)`."""
+        cython_signal_watcher: orcsome3_backend.PySignalWatcher = orcsome3_backend.PySignalWatcher._new_from_python_()
+        cython_signal_watcher.init(
+            callbacks={"default": SignalWatcher.default_callback, "user_callback": callback},
+            signal_number=signal_number.value,
         )
         return cls.new_from_cython_signal_watcher(cython_signal_watcher=cython_signal_watcher)
 
     @classmethod
-    def new_from_cython_signal_watcher(cls, cython_signal_watcher: TYPES.Cython_SignalWatcher) -> SignalWatcher:
+    def new_from_cython_signal_watcher(cls, cython_signal_watcher: orcsome3_backend.PySignalWatcher) -> SignalWatcher:
+        """Wrap an existing Cython signal watcher."""
         signal_watcher: SignalWatcher = cls()
         signal_watcher.cython_signal_watcher = cython_signal_watcher
         return signal_watcher
 
     @staticmethod
-    def default_callback(native_cython_loop: object, native_cython_signal_watcher: object, revents: int) -> None:
-        cython_loop: TYPES.Cython_Loop = TYPES.Cython_Loop(cython_instance=native_cython_loop)
-        cython_signal_watcher: TYPES.Cython_SignalWatcher = TYPES.Cython_SignalWatcher(
-            cython_instance=native_cython_signal_watcher
-        )
-        py_loop: Loop = Loop.new_from_cython_loop(cython_loop=cython_loop)
+    def default_callback(
+        native_cython_loop: orcsome3_backend.PyLoop,
+        native_cython_signal_watcher: orcsome3_backend.PySignalWatcher,
+        revents: int,
+    ) -> None:
+        """Native → Python adapter; invokes the user callback stored on the Cython watcher."""
+        py_loop: Loop = Loop.new_from_cython_loop(cython_loop=native_cython_loop)
         py_signal_watcher: SignalWatcher = SignalWatcher.new_from_cython_signal_watcher(
-            cython_signal_watcher=cython_signal_watcher
+            cython_signal_watcher=native_cython_signal_watcher
         )
-        if py_signal_watcher.cython_signal_watcher is not None:
-            py_signal_watcher.cython_signal_watcher.get_attribute(attr_name="callbacks")["user_callback"](
-                py_loop, py_signal_watcher, revents
-            )
+        watcher: Optional[orcsome3_backend.PySignalWatcher] = py_signal_watcher.cython_signal_watcher
+        if watcher is not None:
+            watcher.callbacks["user_callback"](py_loop, py_signal_watcher, revents)
 
     def start(self, loop: Loop) -> None:
+        """Start watching on `loop`."""
         if self.cython_signal_watcher is not None and loop.cython_loop is not None:
-            self.cython_signal_watcher.call_function(name="start", params=[loop.cython_loop.cython_instance])
+            self.cython_signal_watcher.start(loop=loop.cython_loop)
 
     def stop(self, loop: Loop) -> None:
+        """Stop watching on `loop`."""
         if self.cython_signal_watcher is not None and loop.cython_loop is not None:
-            self.cython_signal_watcher.call_function(name="stop", params=[loop.cython_loop.cython_instance])
+            self.cython_signal_watcher.stop(loop=loop.cython_loop)
+
+    def close(self, loop: Loop) -> None:
+        """Stop and drop the native watcher."""
+        self.stop(loop=loop)
+        self.cython_signal_watcher = None
 
 
 class TimerWatcher:
-    """
-    Class TimerWatcher, use method `new` to instantiate it and method
-    `new_from_cython_timer_watcher` to instantiate it from a `TYPES.Cython_TimerWatcher` object.
-    """
+    """Timer watcher."""
 
-    cython_timer_watcher: Optional[TYPES.Cython_TimerWatcher] = None
+    cython_timer_watcher: Optional[orcsome3_backend.PyTimerWatcher] = None
     after: float = 0.0
     repeat: float = 0.0
     next_stop: float = 0.0
@@ -219,129 +210,127 @@ class TimerWatcher:
     def new(
         cls, callback: Callable[[Loop, TimerWatcher, int], None], after: float = 0.0, repeat: float = 0.0
     ) -> TimerWatcher:
-        cython_timer_watcher: TYPES.Cython_TimerWatcher = TYPES.Cython_TimerWatcher(
-            cython_instance=getattr(TYPES.Cython_TimerWatcher.cython_class, "_new_from_python_")()
-        )
-        cython_timer_watcher.call_function(
-            name="init", params=[{"default": TimerWatcher.default_callback, "user_callback": callback}, after, repeat]
+        """Fire `callback` after `after` seconds, then every `repeat` seconds if `repeat` > 0."""
+        cython_timer_watcher: orcsome3_backend.PyTimerWatcher = orcsome3_backend.PyTimerWatcher._new_from_python_()
+        cython_timer_watcher.init(
+            callbacks={"default": TimerWatcher.default_callback, "user_callback": callback},
+            after=after,
+            repeat=repeat,
         )
         return cls.new_from_cython_timer_watcher(cython_timer_watcher=cython_timer_watcher)
 
     @classmethod
-    def new_from_cython_timer_watcher(cls, cython_timer_watcher: TYPES.Cython_TimerWatcher) -> TimerWatcher:
+    def new_from_cython_timer_watcher(cls, cython_timer_watcher: orcsome3_backend.PyTimerWatcher) -> TimerWatcher:
+        """Wrap an existing Cython timer watcher."""
         timer_watcher: TimerWatcher = cls()
         timer_watcher.cython_timer_watcher = cython_timer_watcher
         return timer_watcher
 
     @staticmethod
-    def default_callback(native_cython_loop: object, native_cython_timer_watcher: object, revents: int) -> None:
-        cython_loop: TYPES.Cython_Loop = TYPES.Cython_Loop(cython_instance=native_cython_loop)
-        cython_timer_watcher: TYPES.Cython_TimerWatcher = TYPES.Cython_TimerWatcher(
-            cython_instance=native_cython_timer_watcher
-        )
-        py_loop: Loop = Loop.new_from_cython_loop(cython_loop=cython_loop)
+    def default_callback(
+        native_cython_loop: orcsome3_backend.PyLoop,
+        native_cython_timer_watcher: orcsome3_backend.PyTimerWatcher,
+        revents: int,
+    ) -> None:
+        """Native → Python adapter; invokes the user callback stored on the Cython watcher."""
+        py_loop: Loop = Loop.new_from_cython_loop(cython_loop=native_cython_loop)
         py_timer_watcher: TimerWatcher = TimerWatcher.new_from_cython_timer_watcher(
-            cython_timer_watcher=cython_timer_watcher
+            cython_timer_watcher=native_cython_timer_watcher
         )
-        if py_timer_watcher.cython_timer_watcher is not None:
-            py_timer_watcher.cython_timer_watcher.get_attribute(attr_name="callbacks")["user_callback"](
-                py_loop, py_timer_watcher, revents
-            )
+        watcher: Optional[orcsome3_backend.PyTimerWatcher] = py_timer_watcher.cython_timer_watcher
+        if watcher is not None:
+            watcher.callbacks["user_callback"](py_loop, py_timer_watcher, revents)
 
     def start(self, loop: Loop, after: float = 0.0, repeat: float = 0.0) -> None:
+        """Start the timer. Non-zero `after`/`repeat` retune it before starting."""
         if self.cython_timer_watcher is not None and loop.cython_loop is not None:
             if after or repeat:
                 self.after = after or self.after
                 self.repeat = repeat or self.repeat
-                self.cython_timer_watcher.call_function(name="set_timer", params=[self.after, self.repeat])
+                self.cython_timer_watcher.set_timer(after=self.after, repeat=self.repeat)
             self.next_stop = time.time() + self.after
-            self.cython_timer_watcher.call_function(name="start", params=[loop.cython_loop.cython_instance])
+            self.cython_timer_watcher.start(loop=loop.cython_loop)
 
     def stop(self, loop: Loop) -> None:
+        """Stop the timer without destroying it."""
         if self.cython_timer_watcher is not None and loop.cython_loop is not None:
-            self.cython_timer_watcher.call_function(name="stop", params=[loop.cython_loop.cython_instance])
+            self.cython_timer_watcher.stop(loop=loop.cython_loop)
+
+    def close(self, loop: Loop) -> None:
+        """Stop and drop the native watcher."""
+        self.stop(loop=loop)
+        self.cython_timer_watcher = None
 
     def again(self, loop: Loop) -> None:
+        """Restart the repeating timer from now (`ev_timer_again`)."""
         if self.cython_timer_watcher is not None and loop.cython_loop is not None:
             self.next_stop = time.time() + self.repeat
-            self.cython_timer_watcher.call_function(name="again", params=[loop.cython_loop.cython_instance])
+            self.cython_timer_watcher.again(loop=loop.cython_loop)
 
     def remaining(self, loop: Loop) -> float:
+        """Seconds until the next fire, or 0 if the native watcher is gone."""
         if self.cython_timer_watcher is not None and loop.cython_loop is not None:
-            return float(
-                self.cython_timer_watcher.call_function(name="remaining", params=[loop.cython_loop.cython_instance])
-            )
+            return float(self.cython_timer_watcher.remaining(loop=loop.cython_loop))
         return 0.0
 
     def update_next_stop(self) -> None:
+        """Set `next_stop` to now + `repeat` (used after a timer callback that keeps running)."""
         self.next_stop = time.time() + self.repeat
 
     def overdue(self, timeout: float) -> bool:
+        """True if the scheduled `next_stop` was more than `timeout` seconds ago."""
         return time.time() > self.next_stop + timeout
 
 
-"""# Test code
-def test_callback(loop: Loop, io_watcher: IOWatcher, revents: int) -> None:
-    print("Test callback called")
-    print(loop, io_watcher, revents)
-    io_watcher.stop(loop=loop)
-    loop.break_(how=Loop.BreakFlags.EVBREAK_ALL)
-    loop.destroy()
+class StatWatcher:
+    """Path watcher (`ev_stat`: inotify on Linux, with a periodic `stat` fallback)."""
 
+    cython_stat_watcher: Optional[orcsome3_backend.PyStatWatcher] = None
 
-def test_callback_signal(loop: Loop, signal_watcher: SignalWatcher, revents: int) -> None:
-    print("Test callback signal called")
-    print(loop, signal_watcher, revents)
-    if display is not None:
-        xlib.x_close_display(display=display)
-    signal_watcher.stop(loop=loop)
-    loop.break_(how=Loop.BreakFlags.EVBREAK_ALL)
-    loop.destroy()
+    @classmethod
+    def new(cls, callback: Callable[[Loop, StatWatcher, int], None], path: str, interval: float = 0.0) -> StatWatcher:
+        """Watch `path`. `interval` 0 lets libev pick the fallback poll (~5s). `callback(loop, watcher, revents)`."""
+        cython_stat_watcher: orcsome3_backend.PyStatWatcher = orcsome3_backend.PyStatWatcher._new_from_python_()
+        cython_stat_watcher.init(
+            callbacks={"default": StatWatcher.default_callback, "user_callback": callback},
+            path=path,
+            interval=interval,
+        )
+        return cls.new_from_cython_stat_watcher(cython_stat_watcher=cython_stat_watcher)
 
+    @classmethod
+    def new_from_cython_stat_watcher(cls, cython_stat_watcher: orcsome3_backend.PyStatWatcher) -> StatWatcher:
+        """Wrap an existing Cython stat watcher."""
+        stat_watcher: StatWatcher = cls()
+        stat_watcher.cython_stat_watcher = cython_stat_watcher
+        return stat_watcher
 
-def test_callback_xevent(__loop__: Loop, __xevent_watcher__: IOWatcher, __revents__: int) -> None:
-    pending_events: int = xlib.x_pending(display=display)
-    print("PENDING EVENTS: ", pending_events)
-    event: xlib.XEvent = xlib.x_next_event(display=display)
-    print(event.get_specific_event())
-    print("")
-
-
-display: xlib.TYPES.Cython_Display | None = None
-
-
-def main() -> None:
-    global display
-    loop: Loop = Loop.new(init_flags=Loop.NewLoopFlags.EVBACKEND_SELECT)
-    # Signal watcher to stop event loop when a SIGINT arrives
-    signal_watcher: SignalWatcher = SignalWatcher.new(callback=test_callback_signal, signal_number=Signals.SIGINT)
-    signal_watcher.start(loop=loop)
-    display = xlib.x_open_display()
-    # Event watcher
-    xevent_watcher: IOWatcher = IOWatcher.new(
-        callback=test_callback_xevent,
-        file_descriptor=xlib.get_connection_number(display=display),
-        event=IOWatcher.Events.EV_READ,
-    )
-    xevent_watcher.start(loop=loop)
-
-    xlib.x_select_input(
-        display=display,
-        window=xlib.get_default_root_window(display=display),
-        event_mask=xlib.INPUT_EVENT_MASKS.SubstructureNotifyMask,
-    )
-    xlib.x_sync(display=display, discard=False)
-
-    def default_error_handler(
-        __display__: xlib.TYPES.Cython_Display, error: xlib.TYPES.EVENTS.Cython_XErrorEvent
+    @staticmethod
+    def default_callback(
+        native_cython_loop: orcsome3_backend.PyLoop,
+        native_cython_stat_watcher: orcsome3_backend.PyStatWatcher,
+        revents: int,
     ) -> None:
-        err: xlib.XErrorEvent = xlib.XErrorEvent(error_event=error)
-        msg_resource: str = f"{'0x%0.2X' % int(err.resourceid)}:{int(err.resourceid)}"
-        print(f"{err.msg} ({msg_resource})")
+        """Native → Python adapter; invokes the user callback stored on the Cython watcher."""
+        py_loop: Loop = Loop.new_from_cython_loop(cython_loop=native_cython_loop)
+        py_stat_watcher: StatWatcher = StatWatcher.new_from_cython_stat_watcher(
+            cython_stat_watcher=native_cython_stat_watcher
+        )
+        watcher: Optional[orcsome3_backend.PyStatWatcher] = py_stat_watcher.cython_stat_watcher
+        if watcher is not None:
+            watcher.callbacks["user_callback"](py_loop, py_stat_watcher, revents)
 
-    xlib.x_set_error_handler(handler=default_error_handler)
-    loop.run(run_flags=Loop.RunFlags.EVRUN_ALWAYS)
+    def start(self, loop: Loop) -> None:
+        """Start watching on `loop`."""
+        if self.cython_stat_watcher is not None and loop.cython_loop is not None:
+            self.cython_stat_watcher.start(loop=loop.cython_loop)
 
+    def stop(self, loop: Loop) -> None:
+        """Stop watching on `loop`."""
+        if self.cython_stat_watcher is not None and loop.cython_loop is not None:
+            self.cython_stat_watcher.stop(loop=loop.cython_loop)
 
-if __name__ == "__main__":
-    main()"""
+    def close(self, loop: Loop) -> None:
+        """Stop and drop the native watcher."""
+        self.stop(loop=loop)
+        self.cython_stat_watcher = None

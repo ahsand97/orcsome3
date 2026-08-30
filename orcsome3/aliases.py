@@ -1,3 +1,5 @@
+"""Short key names mapped to X11 keysym names (`xev` / `X11/keysymdef.h` without the `XK_` prefix)."""
+
 KEYS: dict[str, str] = {
     "`": "grave",
     "-": "minus",

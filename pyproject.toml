@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools", "wheel", "Cython"]
+requires = ["setuptools>=61", "wheel", "Cython>=3.0"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "orcsome3"
@@ -36,15 +37,17 @@ zip-safe = false
 packages = [
     "orcsome3",
     "orcsome3.libs",
-    "orcsome3.libs.xlib",
-    "orcsome3-stubs",
-    "orcsome3-stubs.libs",
-    "orcsome3-stubs.libs.xlib",
+    "orcsome3.libs.build",
+    "orcsome3.libs.cython_libs",
 ]
+
+[tool.setuptools.package-data]
+"orcsome3" = ["py.typed", "icons/hicolor/index.theme", "icons/hicolor/scalable/apps/*.svg"]
+"orcsome3.libs.cython_libs" = ["**/*.pxd", "**/*.pyx"]
 
 [tool.setuptools.dynamic]
 version = {attr = "orcsome3.common.VERSION"}
-readme = {file = ["README.rst"], content-type = "text/x-rst"}
+readme = {file = ["README.md"], content-type = "text/markdown"}
 
 [tool.basedpyright]
 typeCheckingMode = "all"
@@ -52,13 +55,47 @@ reportAny = false
 reportExplicitAny = false
 reportDeprecated = false
 enableTypeIgnoreComments = false
+extraPaths = ["."]
+ignore = ["orcsome3/tray.py"]
+
+[[tool.basedpyright.executionEnvironments]]
+root = "orcsome3/notify.py"
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownParameterType = false
+reportOptionalMemberAccess = false
+reportUnknownArgumentType = false
+
+[[tool.basedpyright.executionEnvironments]]
+root = "tools/generate_backend_stub.py"
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportUnknownParameterType = false
+
+[tool.mypy]
+mypy_path = "."
+python_version = "3.10"
+
+[[tool.mypy.overrides]]
+module = "orcsome3.tray"
+ignore_errors = true
 
 [tool.ruff]
 line-length = 120
 target-version = "py38"
 
 [tool.ruff.lint]
-select = ["I"]
+select = ["I", "PTH", "ANN"]
+ignore = ["ANN401"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["orcsome3"]
+
+[tool.cibuildwheel]
+# 3.9–3.19 via cp31* (picks up new CPythons when cibuildwheel is bumped). 3.8 is a separate CI job
+# (cibuildwheel 4 dropped it). Skip musllinux and free-threaded (cpXXXt) builds.
+build = "cp3[9]* cp31*"
+skip = "*-musllinux_* *t-*"
+before-build = "pip install Cython>=3.0"
+environment = { ORCSOME3_BUILD_JOBS = "2" }

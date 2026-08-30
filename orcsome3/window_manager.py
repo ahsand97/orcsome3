@@ -1,45 +1,75 @@
+"""Window manager singleton, Window objects, and rc.py signal decorators (`on_key`, `on_create`, …).
+
+`KeyboardModifiers`, `WindowMatchers`, and `KeyDefinition` live in `orcsome3.keys` and are re-exported here.
+"""
+
 from __future__ import annotations
 
 import logging
 from array import array
-from enum import Enum
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, Optional, Union, cast, override
+from typing import Callable, NamedTuple, Optional, TypeVar, Union, cast
+
+from typing_extensions import TypeAlias, final
 
 import orcsome3.libs.ev as ev
 import orcsome3.libs.xlib as xlib
-from orcsome3.aliases import KEYS as KEY_ALIASES
-from orcsome3.utils import Singleton, match_string
+from orcsome3.keys import KeyboardModifiers as KeyboardModifiers
+from orcsome3.keys import KeyDefinition as KeyDefinition
+from orcsome3.keys import WindowMatchers as WindowMatchers
+from orcsome3.keys import keycode_from_string_or_keysym
+from orcsome3.utils import SingletonMixin, match_string
 
 # Globals
 _logger: logging.Logger = logging.getLogger(name=__name__)
 _ignore_logger: bool = False
 
+_KeyHandler: TypeAlias = Callable[[xlib.TYPES.Cython_Window, xlib.XKeyEvent], None]
+_CbNone = TypeVar("_CbNone", bound=Callable[[], None])
+_CbKey = TypeVar("_CbKey", bound=Callable[..., None])
+_CbTimer = TypeVar("_CbTimer", bound=Callable[[], Optional[bool]])
 
-class KeyboardModifiers(int, Enum):
-    """Enum representation of keyboard modifiers. A modifier is a key associated with a keyboard modifier mask."""
-
-    NoModifiers = xlib.KEY_MASKS.NoModifiers.value
-    AnyModifier = xlib.KEY_MASKS.AnyModifier.value
-    Alt = xlib.KEY_MASKS.Mod1Mask.value
-    Meta = Alt
-    Control = xlib.KEY_MASKS.ControlMask.value
-    Ctrl = Control
-    Shift = xlib.KEY_MASKS.ShiftMask.value
-    Win = xlib.KEY_MASKS.Mod4Mask.value
-    Windows = Win
-    Hyper = Win
-    Super = Win
-
-
-# Ignored key masks
-_IGNORED_KEY_MASKS: list[int] = [
-    xlib.KEY_MASKS.NoModifiers.value,  # No modifiers
-    xlib.KEY_MASKS.LockMask.value,  # Caps Lock
-    xlib.KEY_MASKS.Mod2Mask.value,  # Num Lock
-    xlib.KEY_MASKS.LockMask.value | xlib.KEY_MASKS.Mod2Mask.value,  # Caps Lock and Num Lock
+# CapsLock (Lock) and NumLock (Mod2) must be grabbed too or hotkeys miss when those locks are on.
+IGNORED_KEY_MASKS: list[int] = [
+    xlib.KEY_MASKS.NoModifiers.value,
+    xlib.KEY_MASKS.LockMask.value,
+    xlib.KEY_MASKS.Mod2Mask.value,
+    xlib.KEY_MASKS.LockMask.value | xlib.KEY_MASKS.Mod2Mask.value,
 ]
+
+
+class AtomCache:
+    """Name ↔ Atom cache for the connected display (avoids repeated `XInternAtom` / `XGetAtomName`)."""
+
+    _wm: WindowManager
+
+    def __init__(self, wm: WindowManager) -> None:
+        self._wm = wm
+        self._cache: dict[str, xlib.TYPES.Cython_Atom] = {}
+        self._names: dict[xlib.TYPES.Cython_Atom, str] = {}
+
+    def get_atom(self, name: str, create_if_not_exists: bool = False) -> xlib.TYPES.Cython_Atom:
+        """Return the interned atom for `name`, creating it on first miss when `create_if_not_exists`."""
+        atom: Optional[xlib.TYPES.Cython_Atom] = self._cache.get(name)
+        if atom is None:
+            atom = xlib.x_get_atom_from_name(
+                display=self._wm.display, atom_name=name, create_if_not_exists=create_if_not_exists
+            )
+            if atom:
+                self._cache[name] = atom
+                self._names[atom] = name
+        return atom
+
+    def get_name(self, atom: xlib.TYPES.Cython_Atom) -> Optional[str]:
+        """Return the name for `atom`, or `None` if the server has no name for it."""
+        name: Optional[str] = self._names.get(atom)
+        if name is None:
+            name = xlib.x_get_atom_name(display=self._wm.display, atom=atom)
+            if name:
+                self._names[atom] = name
+                _ = self._cache.setdefault(name, atom)
+        return name
 
 
 class _RestartException(Exception):
@@ -48,176 +78,31 @@ class _RestartException(Exception):
     pass
 
 
-class WindowMatchers(NamedTuple):
-    """
-    Class representing matchers for a window. All attributes can be `None`
+@final
+class WindowManager(SingletonMixin):
+    """Core orcsome3 window-manager instance (one per process).
+
+    After `orcsome3` has started, get it from anywhere as::
+
+        from orcsome3 import get_wm
+
+        wm: WindowManager = get_wm()
+
+    `WindowManager()` returns the same singleton once it has been constructed with an event loop.
 
     Attrs:
-    - `name`: Window name. The first part of `WM_CLASS` property.
-    - `class_`: Window class. The second part of `WM_CLASS` property.
-    - `role`: Window role. Value of `WM_WINDOW_ROLE` property.
-    - `desktop`: Matches windows placed on specific desktop. Value of `_NET_WM_DESKTOP` property.
-    - `title`: Window title. Value of `_NET_WM_NAME` property.
-    - `window_type`: Window type/s. Value/s of `_NET_WM_WINDOW_TYPE` property.
-
-    `name`, `cls`, `title`, `role` and the elements of `window_type` can be regular expressions.
-    """
-
-    name: Optional[str] = None
-    class_: Optional[str] = None
-    role: Optional[str] = None
-    desktop: Optional[int] = None
-    title: Optional[str] = None
-    window_type: Optional[list[str]] = None
-
-    def is_empty(self) -> bool:
-        """Check if all attributes are `None`"""
-        attrs: list[str] = ["name", "class_", "role", "desktop", "title", "window_type"]
-        values: list[Any] = [getattr(self, x) for x in attrs]
-        return all(value is None for value in values)
-
-
-class KeyDefinition:
-    """
-    Class representing a key definition for a global hotkey. A Key definition consits in modifiers and a key.
-
-    Attrs:
-    - `modifiers`: Specifies the set of modifiers for the global hotkey.
-
-        It can be an instance of `int` representing a valid value for a keymask bit or the value of the
-         bitwise inclusive OR of valid keymask bits.
-
-        Also, it can be a value from enum :class:`orcsome3.window_manager.KeyboardModifiers`
-         or a list of values from same enum.
-
-        For all possible modifiers combination use `orcsome3.window_manager.KeyboardModifiers.Any`.
-
-    - `key`: Key for the global hotkey. See class :class:`orcsome3.window_manager.KeyDefinition.Key`
-
-
-    More information about keyboard modifiers can be found using utility `xmodmap`.
-
-    More information about keys, keycodes and keysyms cand be found using utility `xev`.
-    """
-
-    class Key:
-        """
-        Class representing a key. a Key can be represented by its keycode, keysym or name. Only one attribute is allowed.
-
-        For all possible keys use keycode `orcsome3.xlib.CONSTANTS.KB.ANY_KEY`
-
-        Attrs:
-        - `name`: Key name. Valid names can be obtained from `X11/keysymdef.h` by removing the "XK_" prefix from each.
-         Defaults to `None`.
-        - `keycode`: KeyCode of key. Defaults to `None`.
-        - `keysym`: KeySym of key. Defaults to `None`.
-        """
-
-        def __init__(
-            self,
-            name: Optional[str] = None,
-            keycode: Optional[xlib.TYPES.Cython_KeyCode] = None,
-            keysym: Optional[xlib.TYPES.Cython_KeySym] = None,
-        ) -> None:
-            self.name: Optional[str] = name
-            self.keycode: Optional[Union[int, xlib.TYPES.Cython_KeyCode]] = keycode
-            self.keysym: Optional[Union[int, xlib.TYPES.Cython_KeySym]] = keysym
-
-            non_none_attrs: int = 0
-            for attr in ["name", "keycode", "keysym"]:
-                if getattr(self, attr) is not None:
-                    non_none_attrs += 1
-            if non_none_attrs == 0:
-                raise Exception("Provide one attribute to create a Key object")
-            elif non_none_attrs > 1:
-                raise Exception("Only one attribute can be specified when creating a Key object")
-
-            if self.name is not None and not len(self.name.strip()):
-                raise Exception("Key name cannot be empty")
-
-        def get_keycode(self) -> Optional[xlib.TYPES.Cython_KeyCode]:
-            wm: WindowManager = WindowManager()
-            if self.keycode is not None:
-                return self.keycode
-            if self.keysym is not None:
-                return wm.get_keycode_from_string_or_keysym(key=self.keysym)
-            if self.name is not None:
-                if self.name.lower() == "any_key":
-                    return xlib.CONSTANTS.KB.ANY_KEY
-                return wm.get_keycode_from_string_or_keysym(key=self.name)
-            return None
-
-        @override
-        def __repr__(self) -> str:
-            return (
-                f"{self.__class__.__name__}({', '.join([f'{k}={v!r}' for k, v in self.__dict__.items() if not k.startswith('_')])})"
-            )
-
-    def __init__(self, modifiers: Union[int, KeyboardModifiers, list[KeyboardModifiers]], key: Key) -> None:
-        self.modifiers: Union[int, KeyboardModifiers, list[KeyboardModifiers]] = modifiers
-        self.key: KeyDefinition.Key = key
-
-    @classmethod
-    def new_from_string(cls, keydef: str) -> KeyDefinition:
-        """Create a KeyDefinition from a string"""
-        parts: list[str] = ["".join(x.split()) for x in keydef.split(sep="+") if len(x.strip())]
-        modifiers: list[str] = parts[:-1]
-        key: str = parts[-1]
-        modifiers_for_key_definition: list[KeyboardModifiers] = []
-        for modifier in modifiers:
-            for keyboard_modifier in KeyboardModifiers:
-                if modifier.lower() == keyboard_modifier.name.lower():
-                    modifiers_for_key_definition.append(keyboard_modifier)
-                    break
-        return KeyDefinition(modifiers=modifiers_for_key_definition, key=KeyDefinition.Key(name=key))
-
-    def get_modifiers_value(self) -> int:
-        if isinstance(self.modifiers, int):
-            return self.modifiers
-        elif isinstance(self.modifiers, KeyboardModifiers):
-            return self.modifiers.value
-        else:
-            new_modifier: int = KeyboardModifiers.NoModifiers.value
-            if not len(self.modifiers):
-                return new_modifier
-            for modifier in self.modifiers:
-                new_modifier |= modifier.value
-            return new_modifier
-
-    def get_modifiers_value_and_keycode(self) -> tuple[int, xlib.TYPES.Cython_KeyCode]:
-        """Returns modifiers value and keycode for the key definition. Raise an exception if no keycode is found for attribute `key`."""
-
-        modifiers_value: int = self.get_modifiers_value()
-        keycode_of_key: Optional[xlib.TYPES.Cython_KeyCode] = self.key.get_keycode()
-        if keycode_of_key is None:
-            raise Exception(f"Error obtaining KeyCode for {self.key}")
-        return modifiers_value, keycode_of_key
-
-    @override
-    def __repr__(self) -> str:
-        return (
-            f"{self.__class__.__name__}({', '.join([f'{k}={v!r}' for k, v in self.__dict__.items() if not k.startswith('_')])})"
-        )
-
-
-class WindowManager(metaclass=Singleton["WindowManager"]):
-    """Core orcsome3 window manager instance
-
-    Can be get in any time as::
-
-        from orcsome3.window_manager import WindowManager
-
-        wm: WindowManager = WindowManager()
+    - `display`: Connected X display
+    - `root`: Root window of that display
+    - `atom_cache`: Interned-atom cache for this display
+    - `focus_history`: X window ids that received FocusIn, oldest first
+    - `track_kbd_layout`: If True, key grabs also lock the keyboard group (see `_handle_focus`)
     """
 
     def __init__(self, loop: Optional[ev.Loop] = None) -> None:
-        # Track keyboard layout
+        """Connect to X, wrap the root window, and (if `loop` is given) watch the display fd for events."""
+        if type(self)._singleton_init_done():
+            return
         self.track_kbd_layout: bool = False
-
-        # Denote orcsome3 startup
-        self._startup: bool = False
-
-        # Handlers of events
         self._event_handlers: dict[xlib.XEvent.EVENT_TYPES, Callable[[xlib.XEvent], None]] = {
             xlib.XEvent.EVENT_TYPES.KeyPress: self._key_press_event_handler,
             xlib.XEvent.EVENT_TYPES.KeyRelease: self._handle_keyrelease,
@@ -227,47 +112,47 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
             xlib.XEvent.EVENT_TYPES.FocusOut: self._handle_focus,
             xlib.XEvent.EVENT_TYPES.PropertyNotify: self._handle_property,
         }
-
-        # User handlers
-        self._key_handlers: dict[
-            Optional[WindowMatchers], dict[KeyDefinition, Callable[[Window, xlib.XKeyEvent], None]]
-        ] = {}
+        self._restart_handler: Optional[Callable[[], None]] = None
+        self.focus_history: list[xlib.TYPES.Cython_Window] = []
+        self._focus_ids: set[xlib.TYPES.Cython_Window] = set()
+        self._recently_destroyed_window: Optional[xlib.TYPES.Cython_Window] = None
+        self.display: xlib.TYPES.Cython_Display = xlib.x_open_display()
+        self.root: Window = Window(xlib.get_default_root_window(display=self.display))
+        self._loop: Optional[ev.Loop] = loop
+        self.atom_cache: AtomCache = AtomCache(wm=self)
+        self._wm_name: Optional[str] = None
+        self._wm_name_loaded: bool = False
+        self._startup: bool = False
+        self._inited: bool = False
+        self._key_handlers: dict[Optional[WindowMatchers], dict[KeyDefinition, _KeyHandler]] = {}
+        self._key_grabs: dict[xlib.TYPES.Cython_Window, dict[tuple[int, xlib.TYPES.Cython_KeyCode], _KeyHandler]] = {}
+        self._create_handlers: list[Callable[[], None]] = []
+        self._destroy_handlers: dict[Optional[xlib.TYPES.Cython_Window], list[Callable[[], None]]] = {}
         self._property_handlers: dict[
             xlib.TYPES.Cython_Atom, dict[Optional[xlib.TYPES.Cython_Window], list[Callable[[], None]]]
         ] = {}
-        self._create_handlers: list[Callable[[], None]] = []
-        self._destroy_handlers: dict[Optional[xlib.TYPES.Cython_Window], list[Callable[[], None]]] = {}
+        self._timer_handlers: list[Callable[[], Optional[bool]]] = []
         self._init_handlers: list[Callable[[], None]] = []
         self._deinit_handlers: list[Callable[[], None]] = []
-        self._timer_handlers: list[Callable[[], None]] = []
-        self._restart_handler: Optional[Callable[[], None]] = None
-
-        # History
-        self.focus_history: list[xlib.TYPES.Cython_Window] = []
-
-        # Auxiliar var to avoid destroy callback being called twice for the same window
-        self._recently_destroyed_window: Optional[xlib.TYPES.Cython_Window] = None
-
-        # X11 Display
-        self.display: xlib.TYPES.Cython_Display = xlib.x_open_display()
-
-        # Root window
-        self.root: Window = Window(xlib.get_default_root_window(display=self.display))
-
-        # Event loop
+        self._event_window: Optional[Window] = None
         if loop is not None:
-            self._loop: ev.Loop = loop
-
-            # Event watcher
             xevent_watcher: ev.IOWatcher = ev.IOWatcher.new(
                 callback=self._xevent_cb,
                 file_descriptor=xlib.get_connection_number(display=self.display),
                 event=ev.IOWatcher.Events.EV_READ,
             )
-            xevent_watcher.start(loop=self._loop)
+            xevent_watcher.start(loop=loop)
+        Window.set_wm(self)
 
-        # Share self for all `wrappers.Window` instances
-        Window.wm = self
+    @property
+    def event_window(self) -> Window:
+        """Window associated with the current event (create, destroy, property, key)."""
+        return cast(Window, self._event_window)
+
+    @property
+    def startup(self) -> bool:
+        """True while orcsome3 is processing existing clients at startup."""
+        return self._startup
 
     @property
     def current_window(self) -> Optional[Window]:
@@ -294,61 +179,146 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
 
         If the property does not exist, then no ICCCM2.0-compliant window manager is running.
         """
+        if self._wm_name_loaded:
+            return self._wm_name
         result: Optional[xlib.WindowProperty] = self.root.get_property(property_="_NET_SUPPORTING_WM_CHECK")
         if not result:
-            return None
-        result = Window(result.get_int_list()[0]).get_property(property_="_NET_WM_NAME")
-        return None if not result else result.get_string_list()[0]
+            self._wm_name = None
+        else:
+            name_prop: Optional[xlib.WindowProperty] = Window(result.get_int_list()[0]).get_property(
+                property_="_NET_WM_NAME"
+            )
+            self._wm_name = None if not name_prop else name_prop.get_string_list()[0]
+        self._wm_name_loaded = True
+        return self._wm_name
 
     # ------------------------------------------  DECORATORS  ------------------------------------------
+    def _grab_key_binding(
+        self, window: xlib.TYPES.Cython_Window, key_definition: KeyDefinition, handler: _KeyHandler
+    ) -> None:
+        """XGrabKey on `window` for the binding, once per CapsLock/NumLock combination in `IGNORED_KEY_MASKS`."""
+        modifiers_value, keycode = key_definition.get_modifiers_value_and_keycode(display=self.display)
+        for ignored_key_mask in IGNORED_KEY_MASKS:
+            mask: int = modifiers_value | ignored_key_mask
+            xlib.x_grab_key(
+                display=self.display,
+                window=window,
+                keycode=keycode,
+                modifiers=mask,
+                owner_events=False,
+                pointer_mode=xlib.GRAB_MODE.GrabModeAsync,
+                keyboard_mode=xlib.GRAB_MODE.GrabModeAsync,
+            )
+            self._key_grabs.setdefault(window, {})[(mask, keycode)] = handler
+
+    def _ungrab_key_binding(self, window: xlib.TYPES.Cython_Window, key_definition: KeyDefinition) -> None:
+        """XUngrabKey for the CapsLock/NumLock variants of `key_definition` on `window`."""
+        modifiers_value, keycode = key_definition.get_modifiers_value_and_keycode(display=self.display)
+        grabs: dict[tuple[int, xlib.TYPES.Cython_KeyCode], _KeyHandler] = self._key_grabs.get(window, {})
+        for ignored_key_mask in IGNORED_KEY_MASKS:
+            mask: int = modifiers_value | ignored_key_mask
+            xlib.x_ungrab_key(display=self.display, keycode=keycode, modifiers=mask, window=window)
+            _ = grabs.pop((mask, keycode), None)
+        if not grabs:
+            _ = self._key_grabs.pop(window, None)
+
+    def _ungrab_handler(self, handler: _KeyHandler) -> None:
+        """Drop every X grab whose callback is `handler` (window ids are reused by the server)."""
+        for window, grabs in list(self._key_grabs.items()):
+            for (mask, keycode), bound in list(grabs.items()):
+                if bound is not handler:
+                    continue
+                xlib.x_ungrab_key(display=self.display, keycode=keycode, modifiers=mask, window=window)
+                del grabs[(mask, keycode)]
+            if not grabs:
+                del self._key_grabs[window]
+
+    def _install_key_binding(
+        self, window_matcher: Optional[WindowMatchers], key_definition: KeyDefinition, handler: _KeyHandler
+    ) -> None:
+        """Grab now: root if `window_matcher` is None, otherwise every matching mapped client."""
+        if window_matcher is None:
+            self._grab_key_binding(window=self.root, key_definition=key_definition, handler=handler)
+            return
+        for client in self.get_clients():
+            if client.matches(matcher=window_matcher):
+                self._grab_key_binding(window=client, key_definition=key_definition, handler=handler)
+
+    def _propagate_grabbed_key(
+        self, key_definition: KeyDefinition, handler: _KeyHandler, x_key_event: xlib.XKeyEvent
+    ) -> None:
+        """Temporarily ungrab so the KeyPress can reach the focused client (or the grabbed window), then re-grab."""
+        grab_window: xlib.TYPES.Cython_Window = x_key_event.window
+        self._ungrab_key_binding(window=grab_window, key_definition=key_definition)
+        target: xlib.TYPES.Cython_Window = grab_window
+        if grab_window == self.root:
+            focused: Optional[Window] = self.current_window
+            if focused is not None:
+                target = focused
+        xlib.x_send_event(
+            display=self.display,
+            window=target,
+            propagate=False,
+            xevent=x_key_event,
+            event_masks=xlib.INPUT_EVENT_MASKS.KeyPressMask,
+        )
+        xlib.x_flush(display=self.display)
+        self._grab_key_binding(window=grab_window, key_definition=key_definition, handler=handler)
+
+    def _install_global_key_handlers(self) -> None:
+        """Grab `on_key` bindings that have no window matcher on the root window."""
+        for key_definition, handler in self._key_handlers.get(None, {}).items():
+            self._grab_key_binding(window=self.root, key_definition=key_definition, handler=handler)
+
+    def _install_key_handlers_for_window(self, window: Window) -> None:
+        """Grab `on_key` bindings whose `WindowMatchers` match `window`."""
+        for window_matcher, key_bindings in self._key_handlers.items():
+            if window_matcher is None or not window.matches(matcher=window_matcher):
+                continue
+            for key_definition, handler in key_bindings.items():
+                self._grab_key_binding(window=window, key_definition=key_definition, handler=handler)
 
     def on_key(
         self,
         key_definition: Union[str, KeyDefinition],
         window_matcher: Optional[WindowMatchers] = None,
         propagate_event: bool = False,
-    ) -> Callable[[Callable[[Window, xlib.XKeyEvent], None]], Callable[[Window, xlib.XKeyEvent], None]]:
+    ) -> Callable[[_CbKey], _CbKey]:
         """
-        Signal decorator to define hotkey.
+        Signal decorator to define a hotkey (`XGrabKey`).
 
-        `key_definition` parameter can be a string or an instance of the class `orcsome3.window_manager.KeyDefinition`
-        containing the modifiers and keycode for the global hotkey.
+        Bindings are recorded when the decorator runs (`rc.py` import). `init()` grabs them on the X server.
+        After `init()`, a new `@wm.on_key` grabs immediately (including on already-mapped matching clients).
 
-        `window_matcher` parameter can be a `orcsome3.window_manager.WindowMatchers` instance representing matchers for a window,
-        defaults to `None`. If provided, the hotkey will only be triggered if the window matches the matchers.
-        If not provided, the hotkey will be triggered for any window.
+        Args:
+        - `key_definition`: `"Control + d"` (`Modifier + … + key`) or a `KeyDefinition`.
+          Modifiers: `NoModifiers`, `AnyModifier`, `Control`/`Ctrl`, `Alt`/`Meta`, `Shift`, `Win`/`Windows`/`Hyper`/`Super`.
+          Key: an X keysym name (`X11/keysymdef.h` without `XK_`) or `ANY_KEY`.
+        - `window_matcher`: `None` (default) grabs on the **root** window — a process-wide hotkey.
+          The callback's `window` is that root; use `wm.current_window` for the focused client.
+          If set, grabs on every client that matches (at create time, and immediately if already mapped after `init()`).
+        - `propagate_event`: If True, after the handler runs, replay the KeyPress to the focused client
+          (global grab) or the grabbed window (matcher grab), then re-grab. Defaults to `False` (orcsome3 consumes the key).
 
-        `propagate_event` parameter indicates if the event should be propagated to the event window, defaults to `False`.
+        Signature of the decorated function::
 
-        Signature of decorated function should be::
+            def function_cb(window: Window, event: XKeyEvent) -> None: ...
 
+        Global hotkey::
+
+            from orcsome3 import get_wm
+            from orcsome3.keys import KeyboardModifiers, KeyDefinition
+            from orcsome3.libs.xlib import XKeyEvent
             from orcsome3.window_manager import Window
-            from orcsome3.libs.xlib import XKeyEvent
 
-            def function_cb(window: Window, event: XKeyEvent) -> None:
-                # ... function's body
+            wm = get_wm()
 
-        You can define global hotkeys as follows::
-
-            from orcsome3.libs.xlib import XKeyEvent
-            from orcsome3.window_manager import KeyboardModifiers, KeyDefinition, Window, WindowManager
-
-            wm: WindowManager = WindowManager()
-
-            # Global hotkey to print "hotkey Control + a pressed" when Control + a is pressed
             @wm.on_key(key_definition=KeyDefinition(modifiers=KeyboardModifiers.Control, key=KeyDefinition.Key(name="a")))
             def test_hotkey(window: Window, event: XKeyEvent) -> None:
-                print('hotkey Control + a pressed')
+                print("hotkey Control + a pressed")
 
-        Or keybinded to all the windows that matches the `orcsome3.window_manager.WindowMatchers`
-        when the parameter `window_matcher` is provided::
+        Per-class grab (every matching window, including ones that already exist after `init()`)::
 
-            from orcsome3.libs.xlib import XKeyEvent
-            from orcsome3.window_manager import KeyboardModifiers, KeyDefinition, Window, WindowManager, WindowMatchers
-
-            wm: WindowManager = WindowManager()
-
-            # Custom key to close all the windows that matches the class "URxvt" when Control + d is pressed
             @wm.on_key(
                 key_definition=KeyDefinition(modifiers=KeyboardModifiers.Control, key=KeyDefinition.Key(name="d")),
                 window_matcher=WindowMatchers(class_="URxvt"),
@@ -356,176 +326,106 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
             def close_urxvt_window(window: Window, event: XKeyEvent) -> None:
                 window.close()
 
-        Or using a string instead of a `orcsome3.window_manager.KeyDefinition` for the parameter `key_definition`::
-
-            from orcsome3.libs.xlib import XKeyEvent
-            from orcsome3.window_manager import KeyboardModifiers, KeyDefinition, Window, WindowManager
-
-            wm: WindowManager = WindowManager()
+        String form::
 
             @wm.on_key(key_definition="Control + d")
             def change_window_desktop(window: Window, event: XKeyEvent) -> None:
                 window.change_desktop(desktop=1)
 
-        If a string is provided for the parameter `key_definition`, it must be in the format `modifiers+key`,
-        where `modifiers` is a combination of modifiers and `key` is the key to be pressed.
-
-        Modifiers can be:
-        - `NoModifiers`
-        - `AnyModifier`
-        - `Control` or `Ctrl`
-        - `Alt` or `Meta`
-        - `Shift`
-        - `Win` or `Windows` or `Hyper` or `Super`
-
-        And keys can be a string with the key or the special string `ANY_KEY`, meaning any key.
+        Call `.remove()` on the decorated function to ungrab and unregister.
         """
 
-        def decorator_on_key(
-            original_function: Callable[[Window, xlib.XKeyEvent], None],
-        ) -> Callable[[Window, xlib.XKeyEvent], None]:
-            @wraps(wrapped=original_function)
-            def wrapper(window: Window, x_key_event: xlib.XKeyEvent) -> None:
-                # Call the function
-                original_function(window, x_key_event)
-
-                # Propagate the event to the event window
-                if not propagate_event:
-                    return
-
-                # Ungrab the key
-                xlib.x_ungrab_key(
-                    display=self.display,
-                    keycode=x_key_event.keycode,
-                    modifiers=x_key_event.state,
-                    window=x_key_event.window,
-                )
-
-                # Send the event to the event window
-                xlib.x_send_event(
-                    display=self.display,
-                    window=x_key_event.window,
-                    propagate=False,
-                    xevent=x_key_event,
-                    event_masks=xlib.INPUT_EVENT_MASKS.KeyReleaseMask,
-                )
-                self.flush()
-
-                # FALTA: Esta logica se debe mover a cuando llega el evento, mirar si hay match entre la ventana y el matcher
-                # y posteriormente llamar a x_grab_key con los valores correctos
-                # En el decorador solo se debe verificar que el key_definition sea valido y guardarlo en _key_handlers
-                # Parse the key definition provided in the decorator
-                """original_modifier_and_keycode: Optional[tuple[int, xlib.TYPES.Cython_KeyCode]] = None
-                try:
-                    original_modifier_and_keycode = (
-                        self._parse_keydef_from_string(keydef=key_definition)
-                        if isinstance(key_definition, str)
-                        else self._parse_keydef_from_key_definition(keydef=key_definition)
-                    )
-                except Exception as e:
-                    _logger.error(msg=f"Invalid key definition {key_definition}\n{e}")
-                    return wrapper
-                if original_modifier_and_keycode is None:
-                    return wrapper
-                for ignored_key_mask in _IGNORED_KEY_MASKS:
-                    new_keydef: KeyDefinition = KeyDefinition(
-                        modifiers=original_modifier_and_keycode[0] | ignored_key_mask,
-                        key=KeyDefinition.Key(keycode=original_modifier_and_keycode[1]),
-                    )
-                    xlib.x_grab_key(
-                        display=self.display,
-                        window=window,
-                        keycode=cast(xlib.TYPES.Cython_KeyCode, new_keydef.key.keycode),
-                        modifiers=new_keydef.get_modifiers_value(),
-                        owner_events=False,
-                        pointer_mode=xlib.GRAB_MODE.GrabModeAsync,
-                        keyboard_mode=xlib.GRAB_MODE.GrabModeAsync,
-                    )
-                    self._key_handlers.setdefault(window, {})[new_keydef] = wrapper"""
-
+        def decorator_on_key(original_function: _CbKey) -> _CbKey:
             try:
-                nonlocal key_definition
-                if isinstance(key_definition, str):
-                    key_definition = KeyDefinition.new_from_string(keydef=key_definition)
-                _ = key_definition.get_modifiers_value_and_keycode()
-                self._key_handlers.setdefault(window_matcher, {})[key_definition] = wrapper
+                parsed_key_definition: KeyDefinition = (
+                    KeyDefinition.new_from_string(keydef=key_definition)
+                    if isinstance(key_definition, str)
+                    else key_definition
+                )
+                _ = parsed_key_definition.get_modifiers_value_and_keycode(display=self.display)
             except Exception as e:
                 _logger.error(msg=f"Invalid key definition: {key_definition}.\n{e}")
-            finally:
-                if window_matcher is not None and window_matcher.is_empty():
-                    _logger.error(msg="The window matcher provided is empty.")
-                return wrapper
+                return original_function
+
+            if window_matcher is not None and window_matcher.is_empty():
+                _logger.error(msg="The window matcher provided is empty.")
+                return original_function
+
+            @wraps(wrapped=original_function)
+            def wrapper(window: xlib.TYPES.Cython_Window, x_key_event: xlib.XKeyEvent) -> None:
+                original_function(window, x_key_event)
+                if propagate_event:
+                    self._propagate_grabbed_key(
+                        key_definition=parsed_key_definition, handler=wrapper, x_key_event=x_key_event
+                    )
+
+            self._key_handlers.setdefault(window_matcher, {})[parsed_key_definition] = wrapper
+
+            def remove() -> None:
+                _ = self._key_handlers.get(window_matcher, {}).pop(parsed_key_definition, None)
+                self._ungrab_handler(handler=wrapper)
+
+            setattr(wrapper, "remove", remove)
+            if self._inited:
+                self._install_key_binding(
+                    window_matcher=window_matcher, key_definition=parsed_key_definition, handler=wrapper
+                )
+            return cast(_CbKey, wrapper)
 
         return decorator_on_key
 
-    '''def on_create(self, matcher: Optional[WindowMatchers] = None) -> Callable[[Callable[[], None]], Callable[[], None]]:
+    def on_create(self, matcher: Optional[WindowMatchers] = None) -> Callable[[_CbNone], _CbNone]:
         """
-        Signal decorator to handle window creation
+        Run on CreateNotify, including the existing-client sweep in `init()`.
 
-        Signature of decorated function should be::
+        Use `@wm.on_create()` or `@wm.on_create(WindowMatchers(...))`.
 
-            function_cb() -> None:
-                # ... function's body
-
-        Can be used in two forms. Listen to any window creation::
+        Use `event_window` inside the callback. Filter with a `WindowMatchers` instance
+        (not `name=` / `cls=` kwargs)::
 
             @wm.on_create()
-            def on_create() -> None:
+            def on_any_create() -> None:
                 print(wm.event_window.get_name_and_class())
 
-        Or specific window::
-
-            @wm.on_create(matcher=WindowMatchers(cls='Opera'))
-            def use_firefox_luke() -> None:
+            @wm.on_create(WindowMatchers(class_="Opera"))
+            def replace_opera() -> None:
                 wm.event_window.close()
-                subprocess.Popen(cmd=['firefox'])
 
-        orcsome3 calls on_create handlers on its startup.
-
-        See class `orcsome3.window_manager.WindowMatchers` for `matcher` argument description.
+        Call `.remove()` on the decorated function to unregister.
         """
+        return self.on_create_manage(ignore_startup=False, matcher=matcher)
 
-        def decorator(function: Callable[[], None]) -> Callable[[], None]:
-            _ = self.on_create_manage(ignore_startup=False, matcher=matcher)(function)
-            return function
-
-        return decorator
-
-    def on_manage(self, matcher: Optional[WindowMatchers] = None) -> Callable[[Callable[[], None]], Callable[[], None]]:
+    def on_manage(self, matcher: Optional[WindowMatchers] = None) -> Callable[[_CbNone], _CbNone]:
         """
-        Signal decorator to handle window creation (ignoring orcsome3 startup)
+        Same as `on_create`, but skipped for windows already mapped when `init()` runs.
 
-        Signature of decorated function should be::
+        Use `@wm.on_manage()` or `@wm.on_manage(WindowMatchers(...))`.
 
-            function_cb() -> None:
-                # ... function's body
+        Nested per-window hooks belong here so they are not installed once per existing client at startup::
 
-        Can be used in two forms. Listen to any window creation::
+            @wm.on_manage(WindowMatchers(name="easyeffects", class_="easyeffects"))
+            def on_easyeffects() -> None:
+                @wm.on_destroy(window=wm.event_window)
+                def on_easyeffects_gone() -> None:
+                    print("easyeffects closed")
 
-            @wm.on_manage()
-            def on_manage() -> None:
-                print(wm.event_window.get_name_and_class())
-
-        Or specific window::
-
-            @wm.on_manage(matcher=WindowMatchers(cls='Opera'))
-            def use_firefox_luke():
-                wm.event_window.close()
-                subprocess.Popen(cmd=['firefox'])
-
-        See class `orcsome3.window_manager.WindowMatchers` for `matcher` argument description.
+        Call `.remove()` to unregister.
         """
-
-        def decorator(function: Callable[[], None]) -> Callable[[], None]:
-            _ = self.on_create_manage(ignore_startup=True, matcher=matcher)(function)
-            return function
-
-        return decorator
+        return self.on_create_manage(ignore_startup=True, matcher=matcher)
 
     def on_create_manage(
         self, ignore_startup: bool, matcher: Optional[WindowMatchers] = None
-    ) -> Callable[[Callable[[], None]], Callable[[], None]]:
-        def decorator(function: Callable[[], None]) -> Callable[[], None]:
+    ) -> Callable[[_CbNone], _CbNone]:
+        """Shared implementation of `on_create` / `on_manage`. Prefer those in `rc.py`.
+
+        Args:
+        - `ignore_startup`: If True, skip the existing-client sweep in `init()` (`on_manage`)
+        - `matcher`: If set, run only when `event_window` matches
+
+        Sets `.remove()` on the **user** function (the object `@wm.on_create()` returns).
+        """
+
+        def decorator(function: _CbNone) -> _CbNone:
             @wraps(wrapped=function)
             def wrapper() -> None:
                 if ignore_startup and self._startup:
@@ -536,43 +436,37 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
             def remove() -> None:
                 try:
                     self._create_handlers.remove(wrapper)
-                except Exception:
-                    _logger.exception(msg="An exception occurred removing the function.")
+                except ValueError:
+                    pass
 
             self._create_handlers.append(wrapper)
-            setattr(wrapper, "remove", remove)
-            return wrapper
+            setattr(function, "remove", remove)
+            return function
 
         return decorator
 
-    def on_destroy(self, window: Optional[Window] = None) -> Callable[[Callable[[], None]], Callable[[], None]]:
-        """Signal decorator to handle window destroy
+    def on_destroy(self, window: Optional[xlib.TYPES.Cython_Window] = None) -> Callable[[_CbNone], _CbNone]:
+        """Signal decorator for DestroyNotify.
 
-        Signature of decorated function should be::
+        `@wm.on_destroy()` runs for every destroyed window. Pass `window=` (typically `wm.event_window`
+        from `on_manage`) to listen to one id.
 
-            function_cb() -> None:
-                # ... function's body
-
-        It can be used to all windows::
+        The callback's `event_window` is only that id; reading properties after destroy will fail.
 
             @wm.on_destroy()
             def cb_destroy_window() -> None:
-                print(f'The window {wm.event_window} was destroyed')
+                print(f"The window {wm.event_window} was destroyed")
 
-        Or to a specific window::
-
-            @wm.on_manage(name='easyeffects', cls='easyeffects')
+            @wm.on_manage(WindowMatchers(name="easyeffects", class_="easyeffects"))
             def on_create_easyeffects() -> None:
                 @wm.on_destroy(window=wm.event_window)
                 def on_destroy_easyeffects() -> None:
                     print("easyeffect's window destroyed")
 
-        `wm.event_window` only contains the id of the recently closed window,
-        trying to access any attribute or method on the window will result in an error
-        cause this callback is executed when the window is clonsing/has closed.
+        Call `.remove()` on the decorated function to unregister.
         """
 
-        def decorator(function: Callable[[], None]) -> Callable[[], None]:
+        def decorator(function: _CbNone) -> _CbNone:
             def remove() -> None:
                 try:
                     self._destroy_handlers[window].remove(function)
@@ -586,37 +480,32 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
         return decorator
 
     def on_property_change(
-        self, property: str, window: Optional[Window] = None
-    ) -> Callable[[Callable[[], None]], Callable[[], None]]:
-        """Signal decorator to handle window property change
+        self, property: str, window: Optional[xlib.TYPES.Cython_Window] = None
+    ) -> Callable[[_CbNone], _CbNone]:
+        """Signal decorator for PropertyNotify (new value only).
 
-        Signature of decorated function should be::
+        `property` is an atom name (`_NET_WM_STATE`, …). `window=None` (default) is every window;
+        pass `window=wm.event_window` to watch one id.
 
-            function_cb() -> None:
-                # ... function's body
-
-        One can handle any window property change::
-
-            @wm.on_property_change(property='_NET_WM_STATE')
+            @wm.on_property_change(property="_NET_WM_STATE")
             def window_maximized_state_change() -> None:
                 window: Window = wm.event_window
                 if window.maximized_vert and window.maximized_horz:
-                    print('The window is maximized now!')
-
-        And specific window::
+                    print("The window is maximized now!")
 
             @wm.on_manage()
             def switch_to_desktop() -> None:
                 if wm.event_window.activate_desktop() is None:
-                    # Created window has no any attached desktop so wait for it
-                    @wm.on_property_change(window=wm.event_window, property='_NET_WM_DESKTOP')
+
+                    @wm.on_property_change(window=wm.event_window, property="_NET_WM_DESKTOP")
                     def property_was_set() -> None:
                         wm.event_window.activate_desktop()
-                        getattr('property_was_set', 'remove')() # removes the callback
+                        property_was_set.remove()
 
+        Call `.remove()` on the decorated function to unregister.
         """
 
-        def decorator(function: Callable[[], None]) -> Callable[[], None]:
+        def decorator(function: _CbNone) -> _CbNone:
             def remove() -> None:
                 try:
                     self._property_handlers[self.atom_cache.get_atom(name=property)][window].remove(function)
@@ -633,20 +522,53 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
 
     def on_timer(
         self, timeout: float, start: bool = True, first_timeout: Optional[float] = None
-    ) -> Callable[[Callable[[], None]], Callable[[], None]]:
-        def decorator(function: Callable[[], None]) -> Callable[[], None]:
-            def callback_of_timer(
-                __loop__: ev.TYPES.Cython_Loop, __watcher__: ev.TYPES.Cython_TimerWatcher, __events__: int
-            ) -> None:
-                timer.stop(loop=self._loop) if function() else timer.update_next_stop()
+    ) -> Callable[[_CbTimer], _CbTimer]:
+        """Signal decorator for a repeating libev timer.
+
+        Signature of decorated function should be::
+
+            function_cb() -> Optional[bool]:
+                # return True to stop the timer
+
+        The wrapper gains `.start()`, `.stop()`, `.again()`, `.remaining()`, `.overdue(seconds)`, and `.remove()`.
+
+        Args:
+        - `timeout`: Repeat interval in seconds
+        - `start`: If True, start the timer immediately
+        - `first_timeout`: Delay before the first fire; `None` means `timeout`. `0` fires as soon as the loop runs.
+        """
+
+        def decorator(function: _CbTimer) -> _CbTimer:
+            loop: Optional[ev.Loop] = self._loop
+            if loop is None:
+                raise RuntimeError("WindowManager was created without an event loop")
+
+            def callback_of_timer(__loop__: ev.Loop, __watcher__: ev.TimerWatcher, __events__: int) -> None:
+                if function():
+                    timer.stop(loop=loop)
+                else:
+                    timer.update_next_stop()
+
+            timer: ev.TimerWatcher = ev.TimerWatcher.new(
+                callback=callback_of_timer,
+                after=timeout if first_timeout is None else first_timeout,
+                repeat=timeout,
+            )
 
             self._timer_handlers.append(function)
-            timer = ev.TimerWatcher(callback=callback_of_timer, after=first_timeout or timeout, repeat=timeout)
-            setattr(function, "start", lambda: timer.start(loop=self._loop))
-            setattr(function, "stop", lambda: timer.stop(loop=self._loop))
-            setattr(function, "again", lambda: timer.again(loop=self._loop))
-            setattr(function, "remaining", lambda: timer.remaining(loop=self._loop))
-            setattr(function, "overdue", lambda timeout: timer.overdue(timeout=timeout))
+            setattr(
+                function,
+                "start",
+                lambda after=0.0, repeat=0.0: timer.start(loop=loop, after=after, repeat=repeat),
+            )
+            setattr(function, "stop", lambda: timer.stop(loop=loop))
+            setattr(function, "again", lambda: timer.again(loop=loop))
+            setattr(function, "remaining", lambda: timer.remaining(loop=loop))
+
+            def overdue(overdue_by: float) -> bool:
+                return timer.overdue(timeout=overdue_by)
+
+            setattr(function, "overdue", overdue)
 
             if start:
                 getattr(function, "start")()
@@ -661,12 +583,20 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
             setattr(function, "remove", remove)
             return function
 
-        return decorator'''
+        return decorator
 
-    # --------------------------------------------------------------------------------------------------
+    def on_init(self, func: _CbNone) -> _CbNone:
+        """`@wm.on_init` (no parentheses). Runs in `init()` after root events are selected, before existing clients."""
+        self._init_handlers.append(func)
+        return func
+
+    def on_deinit(self, func: _CbNone) -> _CbNone:
+        """`@wm.on_deinit` (no parentheses). Runs in `stop()` after key grabs and timers are torn down."""
+        self._deinit_handlers.append(func)
+        return func
 
     def init(self) -> None:
-        # Report all events within the root window
+        """Select root events, run `on_init` handlers, grab global keys, then fire create handlers for existing clients."""
         xlib.x_select_input(
             display=self.display, window=self.root, event_mask=xlib.INPUT_EVENT_MASKS.SubstructureNotifyMask
         )
@@ -674,11 +604,14 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
         for handler in self._init_handlers:
             handler()
 
+        self._install_global_key_handlers()
         self._startup = True
         for window in self.get_clients():
             self._process_create_window(window=window)
 
         xlib.x_sync(display=self.display, discard=False)
+        self._startup = False
+        self._inited = True
 
         def default_error_handler(
             __display__: xlib.TYPES.Cython_Display, error: xlib.TYPES.EVENTS.Cython_XErrorEvent
@@ -692,11 +625,22 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
         xlib.x_set_error_handler(handler=default_error_handler)
 
     def stop(self, exit: bool = False) -> None:
+        """Clear handlers and ungrab keys.
+
+        Args:
+        - `exit`: If True, close the X display (process shutdown). If False, ungrab keys so a restart can re-init.
+        """
+        self._inited = False
+        self._startup = False
+        self._wm_name = None
+        self._wm_name_loaded = False
         self._key_handlers.clear()
+        self._key_grabs.clear()
         self._property_handlers.clear()
         self._create_handlers[:] = []
         self._destroy_handlers.clear()
         self.focus_history[:] = []
+        self._focus_ids.clear()
 
         if not exit:
             xlib.x_ungrab_key(
@@ -733,22 +677,14 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
         self._deinit_handlers[:] = []
 
     def get_atom(self, name: str, create_if_not_exists: bool = False) -> xlib.TYPES.Cython_Atom:
-        return xlib.x_get_atom_from_name(
-            display=self.display, atom_name=name, create_if_not_exists=create_if_not_exists
-        )
+        """Intern `name` on this display (`XInternAtom`). Prefer `atom_cache.get_atom` for repeated lookups."""
+        return self.atom_cache.get_atom(name=name, create_if_not_exists=create_if_not_exists)
 
     def get_keycode_from_string_or_keysym(
         self, key: Union[str, xlib.TYPES.Cython_KeySym]
     ) -> Optional[xlib.TYPES.Cython_KeyCode]:
         """Get keycode for `key`"""
-        keysym: xlib.TYPES.Cython_KeySym = xlib.CONSTANTS.KB.NO_SYMBOL
-        if isinstance(key, str):
-            keysym = xlib.x_string_to_keysym(string=KEY_ALIASES.get(key, key))
-        else:
-            keysym = key
-        if keysym == xlib.CONSTANTS.KB.NO_SYMBOL:
-            return None
-        return xlib.x_keysym_to_keycode(display=self.display, keysym=keysym)
+        return keycode_from_string_or_keysym(display=self.display, key=key)
 
     def get_clients(self) -> list[Window]:
         """Return wm client list"""
@@ -775,7 +711,7 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
             xevent=xlib.XClientMessageEvent(
                 display=self.display,
                 window=window,
-                message_type=self.get_atom(name=message_type, create_if_not_exists=True),
+                message_type=self.atom_cache.get_atom(name=message_type, create_if_not_exists=True),
                 format_=format_,
                 data=data,
                 send_event=True,
@@ -783,6 +719,7 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
         )
 
     def flush(self) -> None:
+        """Flush the output buffer to the X server (`XFlush`)."""
         xlib.x_flush(display=self.display)
 
     def find_clients(self, clients: list[Window], matcher: WindowMatchers) -> list[Window]:
@@ -801,13 +738,13 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
         - `clients`: Window list. It can be returned by methods `self.get_clients()` or `self.get_stacked_clients()`
         - `matcher`: Window Matcher. See class `orcsome3.window_manager.WindowMatchers` for description
         """
-        result: list[Window] = self.find_clients(clients=clients, matcher=matcher)
-        try:
-            return result[0]
-        except IndexError:
-            return None
+        for client in clients:
+            if client.matches(matcher=matcher):
+                return client
+        return None
 
     def _process_create_window(self, window: Window) -> None:
+        """Select events on `window`, run create handlers, then grab matching per-window hotkeys."""
         xlib.x_select_input(
             display=self.display,
             window=window,
@@ -815,21 +752,38 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
                 xlib.INPUT_EVENT_MASKS.StructureNotifyMask,
                 xlib.INPUT_EVENT_MASKS.PropertyChangeMask,
                 xlib.INPUT_EVENT_MASKS.FocusChangeMask,
-                xlib.INPUT_EVENT_MASKS.KeyPressMask,
-                xlib.INPUT_EVENT_MASKS.KeyReleaseMask,
             ],
         )
+        self._event_window = window
         for handler in self._create_handlers:
             handler()
+        self._install_key_handlers_for_window(window=window)
 
-    def _process_remove_window(self, window: xlib.TYPES.Cython_Window) -> None:
-        if window in self._destroy_handlers:
-            del self._destroy_handlers[window]
+    def _remember_focus(self, window: xlib.TYPES.Cython_Window) -> None:
+        """Move `window` to the end of `focus_history` (oldest first)."""
+        if window in self._focus_ids:
+            self.focus_history.remove(window)
+        else:
+            self._focus_ids.add(window)
+        self.focus_history.append(window)
 
+    def _forget_focus(self, window: xlib.TYPES.Cython_Window) -> None:
+        """Drop `window` from `focus_history` if present."""
+        if window not in self._focus_ids:
+            return
+        self._focus_ids.discard(window)
         try:
             self.focus_history.remove(window)
         except ValueError:
             pass
+
+    def _process_remove_window(self, window: xlib.TYPES.Cython_Window) -> None:
+        """Drop destroy/property/key-grab state for a window that is gone (X ids are reused)."""
+        _ = self._key_grabs.pop(window, None)
+        if window in self._destroy_handlers:
+            del self._destroy_handlers[window]
+
+        self._forget_focus(window=window)
 
         for atom, whandlers in list(self._property_handlers.items()):
             if window in whandlers:
@@ -839,77 +793,64 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
                 del self._property_handlers[atom]
 
     def _key_press_event_handler(self, event: xlib.XEvent) -> None:
-        xkeyevent: Optional[xlib.XKeyEvent] = cast(Optional[xlib.XKeyEvent], event.get_specific_event())
-        if xkeyevent is None:
+        if not isinstance(event, xlib.XKeyEvent):
             return
-        _logger.info(msg=xkeyevent)
 
-        """if not xkeyevent.window in self._key_handlers:
-            return"""
+        handler: Optional[_KeyHandler] = self._key_grabs.get(event.window, {}).get((event.state, event.keycode))
+        if handler is None:
+            return
 
-        """handler: Optional[Callable[[], None]] = None
-        for key_definition in self._key_handlers[xkeyevent.window]:
-            if key_definition.modifiers == xkeyevent.state and key_definition.key.keycode == xkeyevent.keycode:
-                handler = self._key_handlers[xkeyevent.window][key_definition]
-                break
-        if handler is not None:
-            handler()"""  # FALTA
+        self._event_window = Window(event.window)
+        handler(self._event_window, event)
 
     def _handle_keyrelease(self, event: xlib.XEvent) -> None:
-        xkeyevent: Optional[xlib.XKeyEvent] = cast(Optional[xlib.XKeyEvent], event.get_specific_event())
-        if xkeyevent is None:
-            return
-        _logger.info(msg=xkeyevent)
+        _ = event
 
     def _handle_create(self, event: xlib.XEvent) -> None:
-        xcreatewindowevent: Optional[xlib.XCreateWindowEvent] = cast(
-            Optional[xlib.XCreateWindowEvent], event.get_specific_event()
-        )
-        if xcreatewindowevent is None:
+        if not isinstance(event, xlib.XCreateWindowEvent):
             return
-        _logger.info(msg=xcreatewindowevent)
+        _logger.debug(msg=event)
         self._startup = False
-        window: Window = Window(xcreatewindowevent.window)
+        window: Window = Window(event.window)
         global _ignore_logger
         _ignore_logger = True
-        if window.attributes is None:
+        attrs: Optional[WindowAttributes] = window.attributes
+        if attrs is None or attrs.override_redirect:
             _ignore_logger = False
             return
         _ignore_logger = False
         self._process_create_window(window=window)
 
     def _handle_destroy(self, event: xlib.XEvent) -> None:
-        xdestroywindowevent: Optional[xlib.XDestroyWindowEvent] = cast(
-            Optional[xlib.XDestroyWindowEvent], event.get_specific_event()
-        )
-        if xdestroywindowevent is None:
+        if not isinstance(event, xlib.XDestroyWindowEvent):
             return
-        _logger.info(msg=xdestroywindowevent)
-        if xdestroywindowevent.window == self._recently_destroyed_window:
+        _logger.debug(msg=event)
+        if event.window == self._recently_destroyed_window:
             return
-        self._recently_destroyed_window = xdestroywindowevent.window
+        self._recently_destroyed_window = event.window
+        self._event_window = Window(event.window)
 
         handlers: list[Callable[[], None]] = []
-        if None in self._destroy_handlers.keys():
+        if None in self._destroy_handlers:
             handlers.extend(self._destroy_handlers[None])
-        if xdestroywindowevent.window in self._destroy_handlers.keys():
-            handlers.extend(self._destroy_handlers[xdestroywindowevent.window])
+        if event.window in self._destroy_handlers:
+            handlers.extend(self._destroy_handlers[event.window])
 
         for handler in handlers:
             handler()
-        self._process_remove_window(window=xdestroywindowevent.window)
+        self._process_remove_window(window=event.window)
 
     def _handle_property(self, event: xlib.XEvent) -> None:
-        xpropertyevent: Optional[xlib.XPropertyEvent] = cast(Optional[xlib.XPropertyEvent], event.get_specific_event())
-        if xpropertyevent is None:
+        if not isinstance(event, xlib.XPropertyEvent):
             return
-        atom: xlib.TYPES.Cython_Atom = xpropertyevent.atom
-        if xpropertyevent.state == xlib.XPropertyEvent.STATE.PropertyNewValue and atom in self._property_handlers:
+        atom: xlib.TYPES.Cython_Atom = event.atom
+        if event.state == xlib.XPropertyEvent.STATE.PropertyNewValue and atom in self._property_handlers:
+            self._event_window = Window(event.window)
             wphandlers: dict[Optional[xlib.TYPES.Cython_Window], list[Callable[[], None]]] = self._property_handlers[
                 atom
             ]
-            if xpropertyevent.window in wphandlers:
-                for handler in wphandlers[xpropertyevent.window]:
+            if event.window in wphandlers:
+                for handler in wphandlers[event.window]:
                     handler()
 
             if None in wphandlers:
@@ -917,30 +858,20 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
                     handler()
 
     def _handle_focus(self, event: xlib.XEvent) -> None:
-        xfocuschangeevent: Optional[xlib.XFocusChangeEvent] = cast(
-            Optional[xlib.XFocusChangeEvent], event.get_specific_event()
-        )
-        if xfocuschangeevent is None:
+        if not isinstance(event, xlib.XFocusChangeEvent):
             return
-        _logger.info(msg=xfocuschangeevent)
-        if xfocuschangeevent.type == xlib.XEvent.EVENT_TYPES.FocusIn:
-            try:
-                self.focus_history.remove(xfocuschangeevent.window)
-            except ValueError:
-                pass
-
-            self.focus_history.append(xfocuschangeevent.window)
+        _logger.debug(msg=event)
+        if event.type == xlib.XEvent.EVENT_TYPES.FocusIn:
+            self._remember_focus(window=event.window)
             if (
-                xfocuschangeevent.mode
+                event.mode
                 in (
                     xlib.XFocusChangeEvent.NOTIFY_MODE.NotifyNormal,
                     xlib.XFocusChangeEvent.NOTIFY_MODE.NotifyWhileGrabbed,
                 )
                 and self.track_kbd_layout
             ):
-                prop: Optional[xlib.WindowProperty] = Window(xfocuschangeevent.window).get_property(
-                    property_="_ORCSOME_KBD_GROUP"
-                )
+                prop: Optional[xlib.WindowProperty] = Window(event.window).get_property(property_="_ORCSOME_KBD_GROUP")
                 if prop is not None:
                     _ = xlib.x_kb_lock_group(
                         display=self.display,
@@ -948,14 +879,14 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
                     )
         else:
             if (
-                xfocuschangeevent.mode
+                event.mode
                 in (
                     xlib.XFocusChangeEvent.NOTIFY_MODE.NotifyNormal,
                     xlib.XFocusChangeEvent.NOTIFY_MODE.NotifyWhileGrabbed,
                 )
                 and self.track_kbd_layout
             ):
-                _ = Window(xfocuschangeevent.window).set_property(
+                _ = Window(event.window).set_property(
                     property_name="_ORCSOME_KBD_GROUP",
                     type_="CARDINAL",
                     format_=xlib.PROPERTY_FORMAT.LONG,
@@ -992,7 +923,7 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
 
     def get_workarea(self, desktop: Optional[int] = None) -> list[int]:
         """
-        Get workarea geometery.
+        Get workarea geometry.
 
         - `desktop`: Desktop for working area receiving. If `None` then `self.current_desktop` is used
         """
@@ -1003,22 +934,6 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
             return []
         return result.get_int_list()[4 * desktop : 4 * desktop + 4]
 
-    def on_init(self, func: Callable[[], None]) -> Callable[[], None]:
-        """
-        Adds a function to the list of init handlers, every function on the list gets
-        executed whenever orcsome3 is starting
-        """
-        self._init_handlers.append(func)
-        return func
-
-    def on_deinit(self, func: Callable[[], None]) -> Callable[[], None]:
-        """
-        Adds a function to the list of de-init handlers, every function on the list gets
-        executed whenever orcsome3 is stopping
-        """
-        self._deinit_handlers.append(func)
-        return func
-
     def get_screen_saver_info(self) -> Optional[xlib.XScreenSaverInfo]:
         """
         This is a wrapper around `XScreenSaverQueryInfo`, returns information about the current
@@ -1028,7 +943,7 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
 
     def get_atom_name(self, atom: xlib.TYPES.Cython_Atom) -> Optional[str]:
         """Return the name associated with an atom"""
-        return xlib.x_get_atom_name(display=self.display, atom=atom)
+        return self.atom_cache.get_name(atom=atom)
 
     def reset_dpms(self) -> None:
         """Reset Display Power Management Signaling (DPMS)"""
@@ -1049,11 +964,16 @@ class WindowManager(metaclass=Singleton["WindowManager"]):
         raise _RestartException()
 
     def set_restart_handler(self, handler: Callable[[], None]) -> None:
+        """Called when `restart()` raises; the CLI sets this to reload `rc.py` without exiting."""
         self._restart_handler = handler
 
 
 class Window(int):
-    """Class representation of a window"""
+    """X window id (`int` subclass) with EWMH helpers.
+
+    Use `wm`, `event_window`, and `current_window` from `WindowManager`. The class holds a process-wide
+    `WindowManager` set by `Window.set_wm` during manager construction.
+    """
 
     _wm: Optional[WindowManager] = None
 
@@ -1094,7 +1014,7 @@ class Window(int):
                 window=self,
                 property_name=property_name,
                 type_=type_,
-                atom_type=self.wm.get_atom(name=type_, create_if_not_exists=True),
+                atom_type=self.wm.atom_cache.get_atom(name=type_, create_if_not_exists=True),
                 format_=format_,
                 property_data=property_data,
             ),
@@ -1109,7 +1029,7 @@ class Window(int):
         """
         Get window tree of window, returns `None` if no tree was found.
 
-        Returns a `orcsome3.wrappers.WindowTree` object containing info about the tree (root, parend and children windows).
+        Returns a `orcsome3.window_manager.WindowTree` object containing info about the tree (root, parent and children windows).
         """
         x_window_tree: Optional[xlib.XWindowTree] = xlib.x_get_window_tree(display=self.wm.display, window=self)
         return None if x_window_tree is None else WindowTree.new_from_x_window_tree(x_window_tree=x_window_tree)
@@ -1136,10 +1056,14 @@ class Window(int):
         """
         if matcher.is_empty():
             return False
-        if matcher.name is not None and not match_string(pattern=matcher.name, string=self.name or ""):
-            return False
-        if matcher.class_ is not None and not match_string(pattern=matcher.class_, string=self.class_ or ""):
-            return False
+        if matcher.name is not None or matcher.class_ is not None:
+            name_and_class: Optional[tuple[str, str]] = self.get_name_and_class()
+            name: str = "" if name_and_class is None else name_and_class[0]
+            class_: str = "" if name_and_class is None else name_and_class[1]
+            if matcher.name is not None and not match_string(pattern=matcher.name, string=name):
+                return False
+            if matcher.class_ is not None and not match_string(pattern=matcher.class_, string=class_):
+                return False
         if matcher.role is not None and not match_string(pattern=matcher.role, string=self.role or ""):
             return False
         if matcher.title is not None and not match_string(pattern=matcher.title, string=self.title or ""):
@@ -1155,7 +1079,7 @@ class Window(int):
         return True
 
     def get_windows_same_pid(self) -> list[Window]:
-        """This function returns a `List[Window]` that has the same pid of window"""
+        """Windows under the root tree that share this window's `_NET_WM_PID` (empty if pid is unknown)."""
         if self.pid is None:
             return []
 
@@ -1173,7 +1097,7 @@ class Window(int):
         return windows_associated
 
     def set_icon(self, icon: Union[Path, str]) -> bool:
-        """This function set the icon for window, the maximum icon size is 10Mb"""
+        """Set `_NET_WM_ICON` from an image file. Fails if the path is missing or larger than 10 MB."""
         if isinstance(icon, str):
             icon = Path(icon)
         if not icon.is_file():
@@ -1297,9 +1221,12 @@ class Window(int):
             else:
                 params: list[int] = []
                 motif_hints: Optional[xlib.WindowProperty] = self.get_property(property_="_MOTIF_WM_HINTS")
-                if motif_hints is not None and len(motif_hints.get_int_list()) == 5:
+                if motif_hints is not None:
                     params = motif_hints.get_int_list()
-                    params[2] = int(decorate)
+                    if len(params) == 5:
+                        params[2] = int(decorate)
+                    else:
+                        params = [2, 0, int(decorate), 0, 0]
                 else:
                     # "0x2, 0x0, 0x0, 0x0, 0x0" to undecorate and "0x2, 0x0, 0x1, 0x0, 0x0" to redecorate
                     params = [2, 0, int(decorate), 0, 0]
@@ -1361,7 +1288,7 @@ class Window(int):
     def move_resize(
         self, x: Optional[int] = None, y: Optional[int] = None, w: Optional[int] = None, h: Optional[int] = None
     ) -> None:
-        """Change `window` geometry"""
+        """Move/resize relative to the current desktop workarea (`_NET_MOVERESIZE_WINDOW`). Omitted edges stay 0 / 1px min size."""
 
         flags: int = 0
         flags |= 2 << 12
@@ -1389,8 +1316,8 @@ class Window(int):
         self.wm.flush()
 
     def move_resize2(self, left: int, top: int, right: int, bottom: int) -> None:
-        """Change window geometry"""
-        flags = 0x2F00
+        """Place the window by workarea insets: `left`/`top` origin, width/height = workarea minus `right`/`bottom`."""
+        flags: int = 0x2F00
         # Workarea offsets
         dl, dt, dw, dh = tuple(self.wm.get_workarea(desktop=self.desktop))
         params: list[int] = [flags, left + dl, top + dt, max(1, dw - right - left), max(1, dh - bottom - top)]
@@ -1420,11 +1347,12 @@ class Window(int):
 
     @property
     def wm(self) -> WindowManager:
+        """Process-wide WindowManager bound by `set_wm` (raises if accessed before the manager exists)."""
         return cast(WindowManager, self._wm)
 
     @classmethod
-    @wm.setter
-    def wm(cls, window_manager: WindowManager) -> None:
+    def set_wm(cls, window_manager: WindowManager) -> None:
+        """Bind every Window instance to this manager. Called from `WindowManager.__init__`."""
         cls._wm = window_manager
 
     @property
@@ -1461,26 +1389,14 @@ class Window(int):
     @property
     def name(self) -> Optional[str]:
         """Return first part from `WM_CLASS` property"""
-        result: Optional[xlib.WindowProperty] = self.get_property(property_="WM_CLASS")
-        if result is None:
-            return None
-        try:
-            result_list: list[str] = result.get_string_list()
-            return result_list[0]
-        except:
-            return None
+        name_and_class: Optional[tuple[str, str]] = self.get_name_and_class()
+        return None if name_and_class is None else name_and_class[0]
 
     @property
     def class_(self) -> Optional[str]:
         """Return second part from `WM_CLASS` property"""
-        result: Optional[xlib.WindowProperty] = self.get_property(property_="WM_CLASS")
-        if result is None:
-            return None
-        try:
-            result_list: list[str] = result.get_string_list()
-            return result_list[1]
-        except:
-            return None
+        name_and_class: Optional[tuple[str, str]] = self.get_name_and_class()
+        return None if name_and_class is None else name_and_class[1]
 
     @property
     def title(self) -> Optional[str]:
@@ -1499,15 +1415,29 @@ class Window(int):
         attrs: Optional[xlib.XWindowAttributes] = xlib.x_get_window_attributes(display=self.wm.display, window=self)
         return None if attrs is None else WindowAttributes(window=self, root=self.wm.root, xwindowattributes=attrs)
 
-    @property
-    def state(self) -> Optional[list[str]]:
-        """Return `_NET_WM_STATE` property"""
+    def _state_atoms(self) -> Optional[list[int]]:
+        """`_NET_WM_STATE` atom ids, or `None` if the property is missing."""
         states: Optional[xlib.WindowProperty] = self.get_property(property_="_NET_WM_STATE")
         if states is None or not len(states.property_data):
             return None
+        return states.get_int_list()
+
+    def _has_net_state(self, atom_name: str) -> bool:
+        """True if `_NET_WM_STATE` contains `atom_name` (one property read)."""
+        atoms: Optional[list[int]] = self._state_atoms()
+        if not atoms:
+            return False
+        return self.wm.atom_cache.get_atom(name=atom_name) in atoms
+
+    @property
+    def state(self) -> Optional[list[str]]:
+        """Return `_NET_WM_STATE` property"""
+        atoms: Optional[list[int]] = self._state_atoms()
+        if atoms is None:
+            return None
         try:
             states_: list[str] = []
-            for state in states.get_int_list():
+            for state in atoms:
                 state_atom_name: Optional[str] = self.wm.get_atom_name(atom=state)
                 if state_atom_name is None:
                     continue
@@ -1519,12 +1449,12 @@ class Window(int):
     @property
     def maximized_vert(self) -> bool:
         """Check if atom `_NET_WM_STATE_MAXIMIZED_VERT` is present in window state"""
-        return "_NET_WM_STATE_MAXIMIZED_VERT" in self.state if self.state is not None else False
+        return self._has_net_state(atom_name="_NET_WM_STATE_MAXIMIZED_VERT")
 
     @property
     def maximized_horz(self) -> bool:
         """Check if atom `_NET_WM_STATE_MAXIMIZED_HORZ` is present in window state"""
-        return "_NET_WM_STATE_MAXIMIZED_HORZ" in self.state if self.state is not None else False
+        return self._has_net_state(atom_name="_NET_WM_STATE_MAXIMIZED_HORZ")
 
     @property
     def decorated(self) -> bool:
@@ -1536,47 +1466,31 @@ class Window(int):
         - It has the attribute override-redirect in its window attributes
         - It has a 0 on the third bit in the property `_MOTIF_WM_HINTS` if the property is present
         """
-        decorated: bool = True
-        if self.wm.wm_name is None:  # If the window manager is not running window can't be decorated
-            decorated = False
-        else:
-            # If the window has the attribute override-redirect it can't be decorated
-            if self.attributes is not None and self.attributes.override_redirect:
-                decorated = False
-            # If the window manager running is Openbox then it checks if window has the state '_OB_WM_STATE_UNDECORATED'
-            elif self.wm.wm_name == "Openbox":
-                if self.state is not None and "_OB_WM_STATE_UNDECORATED" in self.state:
-                    decorated = False
-            # If the window manager is not Openbox then it looks for the third bit on the property '_MOTIF_WM_HINTS'
-            # to determine the decorations
-            else:
-                """
-                {
-                    int     flags;
-                    int     functions;
-                    int     decorations;
-                    int     input_mode;
-                    int     status;
-                } MotifWmHints;
-                """
-                motif_hints: Optional[xlib.WindowProperty] = self.get_property(property_="_MOTIF_WM_HINTS")
-                # If the decorations bit in the _MOTIF_WM_HINTS (position 2) is 0 then we can assume the window is not decorated
-                try:
-                    if motif_hints is not None and motif_hints.get_int_list()[2] == 0:
-                        decorated = False
-                except:
-                    pass
-        return decorated
+        wm_name: Optional[str] = self.wm.wm_name
+        if wm_name is None:
+            return False
+        attrs: Optional[WindowAttributes] = self.attributes
+        if attrs is not None and attrs.override_redirect:
+            return False
+        if wm_name == "Openbox":
+            return not self._has_net_state(atom_name="_OB_WM_STATE_UNDECORATED")
+        motif_hints: Optional[xlib.WindowProperty] = self.get_property(property_="_MOTIF_WM_HINTS")
+        try:
+            if motif_hints is not None and motif_hints.get_int_list()[2] == 0:
+                return False
+        except:
+            pass
+        return True
 
     @property
     def urgent(self) -> bool:
         """Check if atom `_NET_WM_STATE_DEMANDS_ATTENTION` is present in window state"""
-        return "_NET_WM_STATE_DEMANDS_ATTENTION" in self.state if self.state is not None else False
+        return self._has_net_state(atom_name="_NET_WM_STATE_DEMANDS_ATTENTION")
 
     @property
     def fullscreen(self) -> bool:
         """Check if atom `_NET_WM_STATE_FULLSCREEN` is present in window state"""
-        return "_NET_WM_STATE_FULLSCREEN" in self.state if self.state is not None else False
+        return self._has_net_state(atom_name="_NET_WM_STATE_FULLSCREEN")
 
     @property
     def pid(self) -> Optional[int]:
@@ -1619,6 +1533,7 @@ class WindowTree(NamedTuple):
 
     @classmethod
     def new_from_x_window_tree(cls, x_window_tree: xlib.XWindowTree) -> WindowTree:
+        """Wrap an `xlib.XWindowTree` so every id is a `Window`."""
         return cls(
             window=Window(x_window_tree.window),
             root=Window(x_window_tree.root),
@@ -1642,16 +1557,17 @@ class WindowAttributes:
     - `depth`: Depth of window
     - `override_redirect`: The override-redirect flag specifies whether map and configure requests on this window
                            should override a SubstructureRedirectMask on the parent
-    - `map_state`: Map state. See enum `orcsome3.xlib.XWindowAttributes.MapState`
+    - `map_state`: Map state. See enum `orcsome3.libs.xlib.XWindowAttributes.MapState`
     """
 
     def __init__(self, window: Window, root: Window, xwindowattributes: xlib.XWindowAttributes) -> None:
+        """Copy geometry and map state from the Xlib attributes struct onto this window."""
         self.window: Window = window
         self.root: Window = root
         self.x: int = xwindowattributes.x
         self.y: int = xwindowattributes.y
         self.width: int = xwindowattributes.width
-        self.height: int = xwindowattributes.width
+        self.height: int = xwindowattributes.height
         self.border_width: int = xwindowattributes.border_width
         self.depth: int = xwindowattributes.depth
         self.override_redirect: bool = xwindowattributes.override_redirect

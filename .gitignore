@@ -10,7 +10,7 @@ __pycache__/
 
 # Distribution / packaging
 .Python
-build/
+/build/
 develop-eggs/
 dist/
 downloads/
@@ -151,6 +151,9 @@ dmypy.json
 # pytype static type analyzer
 .pytype/
 
+# Ruff
+.ruff_cache/
+
 # Cython debug symbols
 cython_debug/
 
@@ -164,10 +167,12 @@ cython_debug/
 .vscode/
 typings/
 
-# orcsome3 libs
+# orcsome3 native backend build artifacts
+orcsome3_built_libraries/
+orcsome3_backend*.so
+
 orcsome3/libs/cython_libs/*
 !orcsome3/libs/cython_libs/__init__.py
-!orcsome3/libs/cython_libs/setup.py
 !orcsome3/libs/cython_libs/orcsome3_backend.pyx
 
 # cairo
@@ -205,3 +210,6 @@ orcsome3/libs/cython_libs/resvg/*
 orcsome3/libs/cython_libs/xlib/*
 !orcsome3/libs/cython_libs/xlib/__init__.pxd
 !orcsome3/libs/cython_libs/xlib/xlib.pxd
+
+# Local rc scratch (not part of the package)
+prueba.py

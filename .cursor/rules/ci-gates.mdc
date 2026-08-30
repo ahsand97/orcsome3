@@ -1,0 +1,57 @@
+---
+description: Keep format/lint green, typed public API, and native backend boundaries for orcsome3
+globs:
+  - "**/*.py"
+  - "**/*.pyi"
+  - "**/*.pyx"
+  - "**/*.pxd"
+  - "**/*.pxi"
+alwaysApply: false
+---
+
+# CI gates (ruff / mypy / basedpyright / style checkers)
+
+Bias new code toward passing:
+
+```bash
+make format && make lint
+```
+
+(`ruff` format + isort + PTH + ANN; `mypy orcsome3 tools`; `basedpyright` with `[tool.basedpyright]` `typeCheckingMode = "all"` on `orcsome3`, `setup.py`, `orcsome3_backend.pyi`, and `tools`; `tools/check_named_args.py` for keyword call sites; `tools/check_explicit_types.py` for annotated assignments.)
+
+## Layout
+
+```text
+rc.py / CLI → orcsome3 (window_manager, notify, run)
+            → orcsome3.libs.xlib / ev   (thin Python wrappers)
+            → orcsome3_backend          (Cython .pyx / .pxd)
+            → orcsome3.libs.build       (static native libs)
+```
+
+- Public scripting API lives in `orcsome3/` (`WindowManager`, `Notification`, `get_wm`, …).
+- Only `orcsome3/libs/xlib.py` and `orcsome3/libs/ev.py` import `orcsome3_backend`. Do not import the `.so` from public modules.
+- Keep the Cython layer a thin C/Xlib binding. Window-manager policy and user-facing types stay in Python.
+- Native recipe/pkg-config changes belong in `orcsome3/libs/build/`, not ad-hoc flags in `.pyx`.
+- Target Python 3.8: `from __future__ import annotations`, `Optional`/`Union` from `typing` when needed. Line length 120.
+
+## Lint / types
+
+- Call sites: prefer keyword arguments whenever the callee accepts them. Write `func(a=a)` not `func(a)`. `make lint` runs `tools/check_named_args.py` (signature-aware: skips positional-only, `*args`, and unresolved callees).
+- Annotate everything that can take a PEP 526/484 annotation: functions, methods, class attributes, and locals — including redundant ones (`a: int = 5` not `a = 5`). `make lint` runs ruff `ANN` (signatures; `ANN401`/`Any` allowed) and `tools/check_explicit_types.py` (simple `name = ...` assignments). Skip Enum members, `TypeVar`/`NewType` bindings, and `for`/`with`/`except`/unpacking targets (Python has no inline annotation there). Class/`self` attributes are also `basedpyright` `reportUnannotatedClassAttribute` (`typeCheckingMode = "all"`).
+- `Any` is allowed (`reportAny` / `reportExplicitAny` are off); do not spread it through the public API when a real type exists.
+- Unused imports/locals are errors (`reportUnusedImport`). Prefix unused params with `_` or remove them.
+- `# type: ignore` is disabled (`enableTypeIgnoreComments = false`). Use `# pyright: ignore[ruleName]` only at the Cython/FFI boundary (`reportMissingImports`, `reportPrivateUsage`, …).
+- Ruff lint is isort + pathlib + annotations (`select = ["I", "PTH", "ANN"]`, `ignore = ["ANN401"]`); `known-first-party = ["orcsome3"]`. Do not add unused runtime deps.
+- Paths: `pathlib.Path` (`/`, `.joinpath`, `.exists`, `.mkdir`, `.iterdir`, …). Do not use `os.path` or filesystem `os.*` (`mkdir`, `listdir`, `remove`, `getcwd`, `open(path)`). Keep `os.environ` / `os.getenv`, `os.cpu_count`, and `os.chdir` (no 3.8 pathlib equivalent; `contextlib.chdir` is 3.11+).
+
+## Documentation (new / changed public surface)
+
+- New or materially changed **exported** functions, methods, and classes need a docstring: what it does, attributes/`Args`/`Returns` when not obvious from types, and non-obvious side effects.
+- Match existing style (see `WindowMatchers`, `Notification`): short class docstring, `Attrs:` / field notes, not a restatement of the signature.
+- Private helpers: document only when intent is non-obvious (X/event ordering, FFI lifetime). Skip noise on trivial getters.
+
+## After structural edits
+
+If the change adds/moves files or exports, run (or ask to run) `make format && make lint` and fix failures before finishing.
+
+If `.pyx` / `.pxd` or `orcsome3/libs/build/` recipes change, also run `make native-fast` (or `make native` if cached static libs are missing). Do not hand-edit generated `.c` files or `orcsome3_built_libraries/`.

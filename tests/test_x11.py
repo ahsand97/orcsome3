@@ -14,23 +14,26 @@ import select
 import shutil
 import subprocess
 import unittest
-from typing import Optional
+from typing import Callable, Optional, cast
+
+from typing_extensions import TypeAlias
 
 import orcsome3.libs.xlib as xlib
 from orcsome3.keys import KeyboardModifiers, KeyDefinition
 from orcsome3.window_manager import Window, WindowManager
 
-_NESTED_SERVER: Optional[subprocess.Popen] = None
+_Popen: TypeAlias = subprocess.Popen[bytes]
+_nested_server: Optional[_Popen] = None
 
 
-def _try_spawn_displayfd(argv: list[str]) -> Optional[tuple[subprocess.Popen, str]]:
+def _try_spawn_displayfd(argv: list[str]) -> Optional[tuple[_Popen, str]]:
     if shutil.which(cmd=argv[0]) is None:
         return None
     read_fd: int
     write_fd: int
     read_fd, write_fd = os.pipe()
     os.set_inheritable(write_fd, True)
-    proc: Optional[subprocess.Popen] = None
+    proc: Optional[_Popen] = None
     try:
         proc = subprocess.Popen(
             args=[argv[0], "-displayfd", str(write_fd), *argv[1:]],
@@ -39,19 +42,19 @@ def _try_spawn_displayfd(argv: list[str]) -> Optional[tuple[subprocess.Popen, st
             stderr=subprocess.DEVNULL,
         )
     except OSError:
-        os.close(read_fd)
-        os.close(write_fd)
+        os.close(fd=read_fd)
+        os.close(fd=write_fd)
         return None
-    os.close(write_fd)
+    os.close(fd=write_fd)
     ready: list[int]
     ready, _, _ = select.select([read_fd], [], [], 5.0)
     if not ready:
         proc.kill()
         _ = proc.wait(timeout=2)
-        os.close(read_fd)
+        os.close(fd=read_fd)
         return None
     raw: bytes = os.read(read_fd, 64)
-    os.close(read_fd)
+    os.close(fd=read_fd)
     line: str = raw.decode().strip()
     if not line.isdigit():
         proc.kill()
@@ -60,30 +63,30 @@ def _try_spawn_displayfd(argv: list[str]) -> Optional[tuple[subprocess.Popen, st
     return proc, f":{line}"
 
 
-def _spawn_nested_x() -> Optional[tuple[subprocess.Popen, str]]:
+def _spawn_nested_x() -> Optional[tuple[_Popen, str]]:
     candidates: list[list[str]] = []
-    if os.environ.get("DISPLAY") and shutil.which(cmd="Xephyr"):
+    if os.getenv(key="DISPLAY") and shutil.which(cmd="Xephyr"):
         candidates.append(["Xephyr", "-screen", "200x200", "-ac"])
     if shutil.which(cmd="Xvfb"):
         candidates.append(["Xvfb", "-screen", "0", "200x200x24"])
     for argv in candidates:
-        spawned: Optional[tuple[subprocess.Popen, str]] = _try_spawn_displayfd(argv=argv)
+        spawned: Optional[tuple[_Popen, str]] = _try_spawn_displayfd(argv=argv)
         if spawned is not None:
             return spawned
     return None
 
 
 def _stop_nested_x() -> None:
-    global _NESTED_SERVER
-    if _NESTED_SERVER is None:
+    global _nested_server
+    if _nested_server is None:
         return
-    _NESTED_SERVER.terminate()
+    _nested_server.terminate()
     try:
-        _ = _NESTED_SERVER.wait(timeout=5)
+        _ = _nested_server.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        _NESTED_SERVER.kill()
-        _ = _NESTED_SERVER.wait(timeout=2)
-    _NESTED_SERVER = None
+        _nested_server.kill()
+        _ = _nested_server.wait(timeout=2)
+    _nested_server = None
 
 
 def _obscure_keycode(display: xlib.TYPES.Cython_Display, *, nested: bool) -> Optional[int]:
@@ -99,7 +102,7 @@ def _obscure_keycode(display: xlib.TYPES.Cython_Display, *, nested: bool) -> Opt
 def _drain_x_events(wm: WindowManager) -> None:
     while xlib.x_pending(display=wm.display) > 0:
         event: xlib.XEvent = xlib.x_next_event(display=wm.display)
-        handler = wm._event_handlers.get(event.type)
+        handler: Optional[Callable[[xlib.XEvent], None]] = wm._event_handlers.get(event.type)
         if handler is not None:
             handler(event)
 
@@ -142,9 +145,10 @@ class TestEventRoundTrip(unittest.TestCase):
             above=99,
             override_redirect=False,
         )
-        cython_event: Optional[xlib.TYPES.EVENTS.Cython_XConfigureEvent] = original._cython_event
-        self.assertIsNotNone(cython_event)
-        wrapped: xlib.XConfigureEvent = xlib.XConfigureEvent._new_from_cython_event_(configure_event=cython_event)
+        self.assertIsNotNone(original._cython_event)
+        wrapped: xlib.XConfigureEvent = xlib.XConfigureEvent._new_from_cython_event_(
+            configure_event=cast(xlib.TYPES.EVENTS.Cython_XConfigureEvent, original._cython_event),
+        )
         self.assertEqual(wrapped.window, 2)
         self.assertEqual(wrapped.event, 1)
         self.assertEqual(wrapped.x, 10)
@@ -156,13 +160,17 @@ class TestEventRoundTrip(unittest.TestCase):
     def test_map_unmap_round_trip(self) -> None:
         mapped: xlib.XMapEvent = xlib.XMapEvent(display=self.display, event=5, window=6, override_redirect=True)
         self.assertIsNotNone(mapped._cython_event)
-        wrapped_map: xlib.XMapEvent = xlib.XMapEvent._new_from_cython_event_(map_event=mapped._cython_event)
+        wrapped_map: xlib.XMapEvent = xlib.XMapEvent._new_from_cython_event_(
+            map_event=cast(xlib.TYPES.EVENTS.Cython_XMapEvent, mapped._cython_event),
+        )
         self.assertEqual(wrapped_map.window, 6)
         self.assertTrue(wrapped_map.override_redirect)
 
         unmapped: xlib.XUnmapEvent = xlib.XUnmapEvent(display=self.display, event=5, window=6, from_configure=True)
         self.assertIsNotNone(unmapped._cython_event)
-        wrapped_unmap: xlib.XUnmapEvent = xlib.XUnmapEvent._new_from_cython_event_(unmap_event=unmapped._cython_event)
+        wrapped_unmap: xlib.XUnmapEvent = xlib.XUnmapEvent._new_from_cython_event_(
+            unmap_event=cast(xlib.TYPES.EVENTS.Cython_XUnmapEvent, unmapped._cython_event),
+        )
         self.assertTrue(wrapped_unmap.from_configure)
 
     def test_button_round_trip(self) -> None:
@@ -178,7 +186,9 @@ class TestEventRoundTrip(unittest.TestCase):
             state=xlib.KEY_MASKS.ControlMask.value,
         )
         self.assertIsNotNone(press._cython_event)
-        wrapped: xlib.XButtonEvent = xlib.XButtonEvent._new_from_cython_event_(button_event=press._cython_event)
+        wrapped: xlib.XButtonEvent = xlib.XButtonEvent._new_from_cython_event_(
+            button_event=cast(xlib.TYPES.EVENTS.Cython_XButtonEvent, press._cython_event),
+        )
         self.assertEqual(wrapped.button, xlib.BUTTONS.Button1)
         self.assertEqual(wrapped.x, 4)
         self.assertEqual(wrapped.state, xlib.KEY_MASKS.ControlMask.value)
@@ -238,11 +248,11 @@ class TestWindowManagerSignals(unittest.TestCase):
         unmapped: list[bool] = []
 
         @self.wm.on_map()
-        def on_map(window: Window, event: xlib.XMapEvent) -> None:
+        def on_map(window: Window, _event: xlib.XMapEvent) -> None:
             mapped.append(int(window))
 
         @self.wm.on_unmap()
-        def on_unmap(window: Window, event: xlib.XUnmapEvent) -> None:
+        def on_unmap(_window: Window, event: xlib.XUnmapEvent) -> None:
             unmapped.append(event.from_configure)
 
         client: int = 0x2222
@@ -324,7 +334,7 @@ class TestWindowManagerSignals(unittest.TestCase):
         atom: xlib.TYPES.Cython_Atom = self.wm.atom_cache.get_atom(name="WM_PROTOCOLS")
 
         @self.wm.on_client_message(message_type="WM_PROTOCOLS")
-        def on_msg(window: Window, event: xlib.XClientMessageEvent) -> None:
+        def on_msg(window: Window, _event: xlib.XClientMessageEvent) -> None:
             got.append(int(window))
 
         event: xlib.XClientMessageEvent = xlib.XClientMessageEvent(
@@ -342,10 +352,10 @@ class TestWindowManagerSignals(unittest.TestCase):
         client: int = 0x6666
         keycode: int = 38
 
-        def on_press(window: xlib.TYPES.Cython_Window, event: xlib.XKeyEvent) -> None:
+        def on_press(_window: xlib.TYPES.Cython_Window, _event: xlib.XKeyEvent) -> None:
             order.append("press")
 
-        def on_release(window: xlib.TYPES.Cython_Window, event: xlib.XKeyEvent) -> None:
+        def on_release(_window: xlib.TYPES.Cython_Window, _event: xlib.XKeyEvent) -> None:
             order.append("release")
 
         self.wm._key_grabs[client] = {(0, keycode): [on_press, on_release]}
@@ -376,7 +386,7 @@ class TestWindowManagerSignals(unittest.TestCase):
         client: int = 0x7777
         modifiers: int = KeyboardModifiers.Control.value
 
-        def on_click(window: xlib.TYPES.Cython_Window, event: xlib.XButtonEvent) -> None:
+        def on_click(_window: xlib.TYPES.Cython_Window, event: xlib.XButtonEvent) -> None:
             clicks.append(int(event.button))
 
         self.wm._button_grabs[client] = {(modifiers, int(xlib.BUTTONS.Button1)): on_click}
@@ -412,18 +422,18 @@ class TestGrabDelivery(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        global _NESTED_SERVER
-        cls._saved_display = os.environ.get("DISPLAY")
-        spawned: Optional[tuple[subprocess.Popen, str]] = _spawn_nested_x()
+        global _nested_server
+        cls._saved_display = os.getenv(key="DISPLAY")
+        spawned: Optional[tuple[_Popen, str]] = _spawn_nested_x()
         if spawned is not None:
-            _NESTED_SERVER, nested_display = spawned
+            _nested_server, nested_display = spawned
             os.environ["DISPLAY"] = nested_display
             cls.nested = True
         probe: Optional[xlib.TYPES.Cython_Display] = _try_open_display()
         if probe is None:
             _stop_nested_x()
             if cls._saved_display is None:
-                _ = os.environ.pop("DISPLAY", None)
+                _ = os.environ.pop(key="DISPLAY", default=None)
             else:
                 os.environ["DISPLAY"] = cls._saved_display
             raise unittest.SkipTest("no X display")
@@ -433,7 +443,7 @@ class TestGrabDelivery(unittest.TestCase):
     def tearDownClass(cls) -> None:
         _stop_nested_x()
         if cls._saved_display is None:
-            _ = os.environ.pop("DISPLAY", None)
+            _ = os.environ.pop(key="DISPLAY", default=None)
         else:
             os.environ["DISPLAY"] = cls._saved_display
 
@@ -457,7 +467,7 @@ class TestGrabDelivery(unittest.TestCase):
         xlib.x_set_error_handler(handler=_swallow_x_errors)
         seen: list[int] = []
 
-        def on_press(window: Window, event: xlib.XKeyEvent) -> None:
+        def on_press(_window: xlib.TYPES.Cython_Window, event: xlib.XKeyEvent) -> None:
             seen.append(int(event.keycode))
 
         key_definition: KeyDefinition = KeyDefinition(
@@ -499,7 +509,7 @@ class TestGrabDelivery(unittest.TestCase):
         seen: list[int] = []
         button: int = int(xlib.BUTTONS.Button1)
 
-        def on_click(window: Window, event: xlib.XButtonEvent) -> None:
+        def on_click(_window: xlib.TYPES.Cython_Window, event: xlib.XButtonEvent) -> None:
             seen.append(int(event.button))
 
         grab_window: Optional[xlib.TYPES.Cython_Window] = None
@@ -532,4 +542,4 @@ class TestGrabDelivery(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    _ = unittest.main()

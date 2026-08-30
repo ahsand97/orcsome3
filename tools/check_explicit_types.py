@@ -14,7 +14,7 @@ from typing import Union
 
 from typing_extensions import override
 
-SKIP_ROOT: set[str] = {"venv", ".venv", "build", "dist", "tests"}
+SKIP_ROOT: set[str] = {"venv", ".venv", "build", "dist"}
 SKIP_ANY: set[str] = {".git", "__pycache__", "orcsome3-stubs"}
 SKIP_FILES: set[str] = {"prueba.py"}
 TYPING_CTORS: set[str] = {"TypeVar", "NewType", "ParamSpec", "TypeVarTuple", "Concatenate"}

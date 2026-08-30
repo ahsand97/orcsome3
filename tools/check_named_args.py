@@ -17,7 +17,7 @@ POSONLY: Any = inspect.Parameter.POSITIONAL_ONLY
 PORK: Any = inspect.Parameter.POSITIONAL_OR_KEYWORD
 VARPOS: Any = inspect.Parameter.VAR_POSITIONAL
 
-SKIP_ROOT: set[str] = {"venv", ".venv", "build", "dist", "tests"}
+SKIP_ROOT: set[str] = {"venv", ".venv", "build", "dist"}
 SKIP_ANY: set[str] = {".git", "__pycache__", "orcsome3-stubs"}
 SKIP_FILES: set[str] = {"prueba.py"}
 

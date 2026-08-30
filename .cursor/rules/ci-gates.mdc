@@ -17,7 +17,7 @@ Bias new code toward passing:
 make format && make lint
 ```
 
-(`ruff` format + isort + PTH + ANN; `mypy orcsome3 tools`; `basedpyright` with `[tool.basedpyright]` `typeCheckingMode = "all"` on `orcsome3`, `setup.py`, `orcsome3_backend.pyi`, and `tools`; `tools/check_named_args.py` for keyword call sites; `tools/check_explicit_types.py` for annotated assignments.)
+(`ruff` format + isort + PTH + ANN; `mypy orcsome3 tools tests`; `basedpyright` with `[tool.basedpyright]` `typeCheckingMode = "all"` on `orcsome3`, `setup.py`, `orcsome3_backend.pyi`, `tools`, and `tests`; `tools/check_named_args.py` for keyword call sites; `tools/check_explicit_types.py` for annotated assignments.)
 
 ## Layout
 

@@ -33,9 +33,9 @@ class TestKeyDefinition(unittest.TestCase):
 
     def test_key_requires_one_attr(self) -> None:
         with self.assertRaises(Exception):
-            KeyDefinition.Key()
+            _ = KeyDefinition.Key()
         with self.assertRaises(Exception):
-            KeyDefinition.Key(name="a", keycode=38)
+            _ = KeyDefinition.Key(name="a", keycode=38)
 
 
 class TestModifiersMask(unittest.TestCase):
@@ -64,4 +64,4 @@ class TestMatchString(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    _ = unittest.main()

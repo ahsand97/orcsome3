@@ -76,6 +76,14 @@ reportUnknownVariableType = false
 reportUnknownArgumentType = false
 reportUnknownParameterType = false
 
+# unittest: setUp/tearDown, internals, decorator-registered callbacks
+[[tool.basedpyright.executionEnvironments]]
+root = "tests"
+reportPrivateUsage = false
+reportImplicitOverride = false
+reportUninitializedInstanceVariable = false
+reportUnusedFunction = false
+
 [tool.mypy]
 mypy_path = "."
 python_version = "3.10"

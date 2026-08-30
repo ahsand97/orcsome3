@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 from orcsome3.run import run
 
 run()

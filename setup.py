@@ -1,66 +1,58 @@
 import sys
-from typing import List
+from pathlib import Path
 
 from setuptools import setup
+from setuptools.extension import Extension
 
-import orcsome3.version
+from orcsome3.libs.setup import build_extensions
+from orcsome3.utils import rmdir
 
 
-def generate_stubs() -> None:
-    """
-    This function re-generate the stubs for orcsome3, only meant to be used for development
-    """
+def generate_stubs() -> None:  # FALTA
+    """This function re-generate the stubs for orcsome3, only meant to be used for development"""
     try:
-        from pathlib import Path
-
-        def rmdir(directory: Path) -> None:
-            """Delete all items from a directory"""
-            directory = Path(directory)
-            for item in directory.iterdir():
-                if item.is_dir():
-                    rmdir(directory=item)
-                else:
-                    item.unlink()
-            directory.rmdir()
 
         def generate_files() -> Path:
+            """Generate stubs using mypy. Output folder is `./orcsome3-stubs`"""
             import mypy.stubgen as stubgen
 
-            def initialize_modules(directory: Path) -> None:
-                # Initializes orcsome-stubs : __init__.py
-                directory.mkdir(parents=True, exist_ok=True)
-                directory.joinpath("__init__.py").touch(exist_ok=True)
-
-                # Initializes orcsome-stubs.orcsome : __init__.py
-                inner_directory = directory.joinpath("orcsome")
-                inner_directory.mkdir(parents=True, exist_ok=True)
-                inner_directory.joinpath("__init__.py").touch(exist_ok=True)
-
+            # ./orcsome3-stubs
             output_dir = Path(__file__).parent.joinpath("orcsome3-stubs")
-            if output_dir.is_dir():
-                rmdir(directory=output_dir)
-            initialize_modules(directory=output_dir)
-            args = ["--verbose", "--output", str(output_dir), str(Path(__file__).parent.joinpath("orcsome3"))]
+
+            # Delete folder if already exists
+            rmdir(output_dir)
+
+            # Create output folder
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create __init__.py file to initialize module within the output folder
+            output_dir.joinpath("__init__.py").touch(exist_ok=True)
+
+            # Args for mypy
+            source_files: Path = Path(__file__).parent.joinpath("orcsome3")
+            args = ["--include-private", "--verbose", "--output", str(output_dir), str(source_files)]
             sys.argv.extend(args)
+
             # This will run "stubgen --verbose --output ./orcsome3-stubs ./orcsome3"
             stubgen.main()
-            # returns the full path of ./orcsome3-stubs
+
+            # return the full path of ./orcsome3-stubs
             return output_dir
 
-        def copy_files(dir: Path) -> Path:
+        def copy_files(source: Path, target: Path, delete_source: bool = False) -> None:
             """
-            This function will re-order the files created by function `generate_files`
+            Copy all the files in `source` to `target`. `delete_source` denote if remove source folder or not
             """
             import shutil
 
-            destiny: Path = dir.joinpath("orcsome")  # ./orcsome3-stubs/orcsome
-            # Copy the file ./orcsome3-stubs/orcsome3/version.pyi to ./orcsome3-stubs/version.pyi
-            shutil.copy(src=dir.joinpath("orcsome3", "version.pyi"), dst=dir.joinpath("version.pyi"))
-            for file_ in dir.joinpath("orcsome3", "orcsome").iterdir():
-                # Copy every single file from ./orcsome3-stubs/orcsome3/orcsome to ./orcsome3-stubs/orcsome
-                shutil.copy(src=file_, dst=destiny.joinpath(file_.name))
-            rmdir(directory=dir.joinpath("orcsome3"))  # remove recursively ./orcsome3-stubs/orcsome3
-            return destiny
+            for file_ in source.iterdir():
+                # Copy every single file from ./orcsome3-stubs/orcsome3 to ./orcsome3-stubs
+                if file_.is_file():
+                    shutil.copy(src=file_, dst=target.joinpath(file_.name))
+                if file_.is_dir():
+                    shutil.copytree(src=file_, dst=target.joinpath(file_.name), dirs_exist_ok=True)
+            if delete_source:
+                rmdir(source)  # remove recursively ./orcsome3-stubs/orcsome3
 
         def complete_stubs(dir: Path) -> None:
             """
@@ -68,24 +60,28 @@ def generate_stubs() -> None:
             for the type Any, also, it will put the decorator @cached_property to the
             necessary methods accordingly to source
             """
-            files_to_edit: List[Path] = []
-            for file_ in dir.iterdir():
-                if file_.name.endswith(".pyi"):
-                    with file_.open(mode="r") as content:
-                        lines = content.readlines()
-                        for line in lines:
-                            if (
-                                "from _typeshed import Incomplete" in line
-                                or "from functools import cached_property" in line
-                            ):
-                                files_to_edit.append(file_)
-                                break
+            files_to_edit: list[Path] = []
 
-            source_files = Path(__file__).parent.joinpath("orcsome3", "orcsome")
+            # Add every .pyi file that has the type "Incomplete" or the decorator
+            # @functools.cached_property to the list of files to edit
+            for file_ in dir.iterdir():
+                if not file_.name.endswith(".pyi"):
+                    continue
+                with file_.open(mode="r") as content:
+                    lines = content.readlines()
+                    for line in lines:
+                        if (
+                            "from _typeshed import Incomplete" in line
+                            or "from functools import cached_property" in line
+                        ):
+                            files_to_edit.append(file_)
+                            break
+
+            source_files_folder = Path(__file__).parent.joinpath("orcsome3")
             for file_ in files_to_edit:
-                src: Path = source_files.joinpath(file_.name.replace(".pyi", ".py"))
-                src_content: List[str] = []
-                new_content: List[str] = []
+                src: Path = source_files_folder.joinpath(file_.name.replace(".pyi", ".py"))
+                src_content: list[str] = []
+                new_content: list[str] = []
                 typing_import_src: str = ""
 
                 with src.open(mode="r") as src_:
@@ -100,7 +96,7 @@ def generate_stubs() -> None:
                 with file_.open(mode="r") as f_:
                     new_content = [line for line in f_.readlines() if "from _typeshed import Incomplete" not in line]
                     fix_decorator: bool = False
-                    list_variables_cached: List[str] = []
+                    list_variables_cached: list[str] = []
                     for index, line in enumerate(iterable=new_content):
                         line_clean: str = line.translate(str.maketrans("", "", " \n\t\r"))
                         if "from typing import" in line:
@@ -110,12 +106,12 @@ def generate_stubs() -> None:
                             line_fixed: bool = False
                             for src_line in src_content:
                                 if f"self.{nombre_variable}:" in src_line:
-                                    variable_definition: List[str] = src_line.strip().lstrip().split(sep=":")
+                                    variable_definition: list[str] = src_line.strip().lstrip().split(sep=":")
                                     if not len(variable_definition) >= 2:
                                         continue
                                     if variable_definition[1].strip():
                                         new_content[index] = line.replace(
-                                            "Incomplete", variable_definition[1].split("=")[0].strip()
+                                            "Incomplete", variable_definition[1].split(sep="=")[0].strip()
                                         )
                                         line_fixed = True
                                         break
@@ -133,10 +129,10 @@ def generate_stubs() -> None:
                     f_.writelines(new_content)
 
         output_dir: Path = generate_files()  # ./orcsome3-stubs
-        stub_dir: Path = copy_files(dir=output_dir)
-        complete_stubs(dir=stub_dir)
+        copy_files(source=output_dir.joinpath("orcsome3"), target=output_dir, delete_source=True)
+        complete_stubs(dir=output_dir)
     except ModuleNotFoundError as e:
-        print(f"EXCEPTION: {e}")
+        print(f"Exception creating stubs: {e}")
 
 
 if "--generate-stubs" in sys.argv:
@@ -144,33 +140,10 @@ if "--generate-stubs" in sys.argv:
     generate_stubs()
     exit()
 
-setup(
-    name="orcsome3",
-    version=orcsome3.version.VERSION,
-    author="Ahsan Pérez",
-    author_email="ahsand.perez@gmail.com",
-    description="Scripting extension for NETWM compliant window managers",
-    long_description=open(file="README.rst").read(),
-    long_description_content_type="text/x-rst",
-    zip_safe=False,
-    packages=["orcsome3", "orcsome3.orcsome", "orcsome3-stubs", "orcsome3-stubs.orcsome", "orcsome3.bin"],
-    package_data={"orcsome3-stubs": ["*.pyi", "**/*.pyi"], "orcsome3-stubs.orcsome": ["*.pyi", "**/*.pyi"]},
-    include_package_data=True,
-    cffi_modules=["orcsome3/orcsome/ev_build.py:ffibuilder", "orcsome3/orcsome/xlib_build.py:ffibuilder"],
-    setup_requires=["cffi>=1.0.0"],
-    install_requires=["cffi>=1.0.0"],
-    extras_require={"dev": ["mypy", "mypy-extensions", "typing_extensions"]},
-    scripts=["orcsome3/bin/orcsome3"],
-    url="https://github.com/ahsand97/orcsome3",
-    classifiers=[
-        "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: MIT License",
-        "Development Status :: 4 - Beta",
-        "Environment :: X11 Applications",
-        "Topic :: Desktop Environment :: Window Managers",
-        "Intended Audience :: Developers",
-        "Intended Audience :: End Users/Desktop",
-        "Natural Language :: English",
-    ],
-    python_requires=">=3.8",
+extensions: list[Extension] = build_extensions(skip_build=True, static=True)[1]  # Cythonize extensions
+# Everything else is defined in the file pyproject.toml
+setup(  # type: ignore[reportUnusedCallResult]
+    package_data={"orcsome3.libs.xlib": ["*.pxd", "*.pyx"], "orcsome3-stubs": ["*.pyi"]},
+    include_package_data=False,
+    ext_modules=extensions,
 )

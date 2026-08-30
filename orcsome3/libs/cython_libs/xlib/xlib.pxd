@@ -19,6 +19,8 @@ cdef extern from "<X11/Xlib.h>": # pkg-config: x11
     long FocusChangeMask
     long KeyPressMask
     long KeyReleaseMask
+    long ButtonPressMask
+    long ButtonReleaseMask
 
     # GrabPointer, GrabButton, GrabKeyboard, GrabKey Modes
     int GrabModeSync
@@ -41,6 +43,7 @@ cdef extern from "<X11/Xlib.h>": # pkg-config: x11
     int Button5Mask
 
     # Button names
+    int AnyButton
     int Button1
     int Button2
     int Button3
@@ -72,6 +75,17 @@ cdef extern from "<X11/Xlib.h>": # pkg-config: x11
     int IsUnmapped
     int IsUnviewable
     int IsViewable
+
+    # CreateWindow
+    int InputOutput
+    int InputOnly
+    long CopyFromParent
+    unsigned long CWOverrideRedirect
+
+    # SetInputFocus / GetInputFocus
+    int RevertToNone
+    int RevertToPointerRoot
+    int RevertToParent
 
     # Event names. Used in "type" field in XEvent structures
     int KeyPress
@@ -135,7 +149,28 @@ cdef extern from "<X11/Xlib.h>": # pkg-config: x11
     ctypedef unsigned long Time
     ctypedef unsigned long XID
     ctypedef XID Window
+    ctypedef XID Cursor
     ctypedef XID Drawable
+    ctypedef XID Pixmap
+    ctypedef XID Colormap
+    ctypedef struct Visual:
+        pass
+    ctypedef struct XSetWindowAttributes:
+        Pixmap background_pixmap
+        unsigned long background_pixel
+        Pixmap border_pixmap
+        unsigned long border_pixel
+        int bit_gravity
+        int win_gravity
+        int backing_store
+        unsigned long backing_planes
+        unsigned long backing_pixel
+        int save_under
+        long event_mask
+        long do_not_propagate_mask
+        int override_redirect
+        Colormap colormap
+        Cursor cursor
     ctypedef XID KeySym
     ctypedef unsigned char KeyCode
     ctypedef unsigned long Atom
@@ -205,6 +240,34 @@ cdef extern from "<X11/Xlib.h>": # pkg-config: x11
         Display *display
         Window event
         Window window
+    ctypedef struct XMapEvent:
+        int type
+        unsigned long serial
+        int send_event
+        Display *display
+        Window event
+        Window window
+        int override_redirect
+    ctypedef struct XUnmapEvent:
+        int type
+        unsigned long serial
+        int send_event
+        Display *display
+        Window event
+        Window window
+        int from_configure
+    ctypedef struct XConfigureEvent:
+        int type
+        unsigned long serial
+        int send_event
+        Display *display
+        Window event
+        Window window
+        int x, y
+        int width, height
+        int border_width
+        Window above
+        int override_redirect
     ctypedef struct XPropertyEvent:
         int type
         unsigned long serial
@@ -241,6 +304,9 @@ cdef extern from "<X11/Xlib.h>": # pkg-config: x11
         XFocusChangeEvent xfocus
         XCreateWindowEvent xcreatewindow
         XDestroyWindowEvent xdestroywindow
+        XMapEvent xmap
+        XUnmapEvent xunmap
+        XConfigureEvent xconfigure
         XPropertyEvent xproperty
         XErrorEvent xerror
         XClientMessageEvent xclient
@@ -262,6 +328,24 @@ cdef extern from "<X11/Xlib.h>": # pkg-config: x11
     int XCloseDisplay(Display *display)
     Window XDefaultRootWindow(Display *display)
     int XConnectionNumber(Display *display)
+    Window XCreateWindow(
+        Display *display,
+        Window parent,
+        int x,
+        int y,
+        unsigned int width,
+        unsigned int height,
+        unsigned int border_width,
+        int depth,
+        unsigned int clazz,
+        Visual *visual,
+        unsigned long valuemask,
+        XSetWindowAttributes *attributes
+    )
+    int XMapWindow(Display *display, Window window)
+    int XDestroyWindow(Display *display, Window window)
+    int XSetInputFocus(Display *display, Window focus, int revert_to, Time time)
+    int XGetInputFocus(Display *display, Window *focus_return, int *revert_to_return)
     int XGrabKey(
         Display *display,
         int keycode,
@@ -272,6 +356,19 @@ cdef extern from "<X11/Xlib.h>": # pkg-config: x11
         int keyboard_mode
     )
     int XUngrabKey(Display *display, int keycode, unsigned int modifiers, Window window)
+    int XGrabButton(
+        Display *display,
+        unsigned int button,
+        unsigned int modifiers,
+        Window grab_window,
+        int owner_events,
+        unsigned int event_mask,
+        int pointer_mode,
+        int keyboard_mode,
+        Window confine_to,
+        Cursor cursor
+    )
+    int XUngrabButton(Display *display, unsigned int button, unsigned int modifiers, Window grab_window)
     int XSelectInput(Display *display, Window window, long event_mask)
     int XConfigureWindow(
         Display *display,
@@ -415,3 +512,9 @@ cdef extern from "<X11/extensions/dpms.h>": # pkg-config: xext
     int DPMSInfo(Display *display, CARD16 *power_level, BOOL *state)
     int DPMSEnable(Display *display)
     int DPMSDisable(Display *display)
+
+cdef extern from "<X11/extensions/XTest.h>": # pkg-config: xtst
+    int XTestQueryExtension(Display *display, int *event_basep, int *error_basep, int *majorp, int *minorp)
+    int XTestFakeKeyEvent(Display *display, unsigned int keycode, int is_press, unsigned long delay)
+    int XTestFakeButtonEvent(Display *display, unsigned int button, int is_press, unsigned long delay)
+    int XTestFakeMotionEvent(Display *display, int screen, int x, int y, unsigned long delay)

@@ -31,7 +31,7 @@ _ITEM_PATH: str = "/StatusNotifierItem"
 _MENU_PATH: str = "/MenuBar"
 _ID_RELOAD: int = 1
 _ID_QUIT: int = 2
-_LABELS: dict[int, str] = {_ID_RELOAD: "Reload rc.py", _ID_QUIT: "Quit"}
+_LABELS: dict[int, str] = {_ID_RELOAD: "Reload config", _ID_QUIT: "Quit"}
 _WATCHERS: tuple[tuple[str, str], ...] = (
     ("org.kde.StatusNotifierWatcher", "/StatusNotifierWatcher"),
     ("org.freedesktop.StatusNotifierWatcher", "/StatusNotifierWatcher"),
@@ -147,7 +147,7 @@ class StatusNotifierItem(ServiceInterface):
 
 
 class DBusMenu(ServiceInterface):
-    """com.canonical.dbusmenu: Reload rc.py and Quit."""
+    """com.canonical.dbusmenu: Reload config and Quit."""
 
     def __init__(self) -> None:
         super().__init__(name="com.canonical.dbusmenu")

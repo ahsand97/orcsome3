@@ -110,6 +110,12 @@ cdef class PyXEvent:
             return PyXCreateWindowEvent._new_(create_window_event=&self._native_event.xcreatewindow)
         elif self.type == EVENT_TYPES.DestroyNotify:
             return PyXDestroyWindowEvent._new_(destroy_window_event=&self._native_event.xdestroywindow)
+        elif self.type == EVENT_TYPES.MapNotify:
+            return PyXMapEvent._new_(map_event=&self._native_event.xmap)
+        elif self.type == EVENT_TYPES.UnmapNotify:
+            return PyXUnmapEvent._new_(unmap_event=&self._native_event.xunmap)
+        elif self.type == EVENT_TYPES.ConfigureNotify:
+            return PyXConfigureEvent._new_(configure_event=&self._native_event.xconfigure)
         elif self.type == EVENT_TYPES.PropertyNotify:
             return PyXPropertyEvent._new_(property_event=&self._native_event.xproperty)
         elif self.type == EVENT_TYPES.ClientMessage:
@@ -426,6 +432,133 @@ cdef class PyXDestroyWindowEvent(PyXEvent):
             window=window
         )
         return PyXDestroyWindowEvent._new_(destroy_window_event=&xDestroyWindowEvent)
+
+cdef class PyXMapEvent(PyXEvent):
+    cdef public xlib.Window event
+    cdef public int override_redirect
+
+    @staticmethod
+    cdef PyXMapEvent _new_(xlib.XMapEvent *map_event):
+        cdef PyXMapEvent pyXMapEvent = PyXMapEvent()
+        pyXMapEvent._set_attributes_from_event_(
+            event=<xlib.XEvent>dereference(map_event), serial=map_event.serial, display=map_event.display, window=map_event.window
+        )
+        pyXMapEvent.event = map_event.event
+        pyXMapEvent.override_redirect = map_event.override_redirect
+        return pyXMapEvent
+
+    @staticmethod
+    def _new_from_python_(
+        int type,
+        unsigned long serial,
+        send_event: bool,
+        PyDisplay display,
+        xlib.Window event,
+        xlib.Window window,
+        override_redirect: bool
+    ) -> PyXMapEvent:
+        cdef xlib.XMapEvent xMapEvent = xlib.XMapEvent(  # type: ignore
+            type=type,
+            serial=serial,
+            send_event=<int>send_event,
+            display=display._display,
+            event=event,
+            window=window,
+            override_redirect=<int>override_redirect
+        )
+        return PyXMapEvent._new_(map_event=&xMapEvent)
+
+cdef class PyXUnmapEvent(PyXEvent):
+    cdef public xlib.Window event
+    cdef public int from_configure
+
+    @staticmethod
+    cdef PyXUnmapEvent _new_(xlib.XUnmapEvent *unmap_event):
+        cdef PyXUnmapEvent pyXUnmapEvent = PyXUnmapEvent()
+        pyXUnmapEvent._set_attributes_from_event_(
+            event=<xlib.XEvent>dereference(unmap_event), serial=unmap_event.serial, display=unmap_event.display, window=unmap_event.window
+        )
+        pyXUnmapEvent.event = unmap_event.event
+        pyXUnmapEvent.from_configure = unmap_event.from_configure
+        return pyXUnmapEvent
+
+    @staticmethod
+    def _new_from_python_(
+        int type,
+        unsigned long serial,
+        send_event: bool,
+        PyDisplay display,
+        xlib.Window event,
+        xlib.Window window,
+        from_configure: bool
+    ) -> PyXUnmapEvent:
+        cdef xlib.XUnmapEvent xUnmapEvent = xlib.XUnmapEvent(  # type: ignore
+            type=type,
+            serial=serial,
+            send_event=<int>send_event,
+            display=display._display,
+            event=event,
+            window=window,
+            from_configure=<int>from_configure
+        )
+        return PyXUnmapEvent._new_(unmap_event=&xUnmapEvent)
+
+cdef class PyXConfigureEvent(PyXEvent):
+    cdef public xlib.Window event
+    cdef public int x, y
+    cdef public int width, height
+    cdef public int border_width
+    cdef public xlib.Window above
+    cdef public int override_redirect
+
+    @staticmethod
+    cdef PyXConfigureEvent _new_(xlib.XConfigureEvent *configure_event):
+        cdef PyXConfigureEvent pyXConfigureEvent = PyXConfigureEvent()
+        pyXConfigureEvent._set_attributes_from_event_(
+            event=<xlib.XEvent>dereference(configure_event), serial=configure_event.serial, display=configure_event.display, window=configure_event.window
+        )
+        pyXConfigureEvent.event = configure_event.event
+        pyXConfigureEvent.x = configure_event.x
+        pyXConfigureEvent.y = configure_event.y
+        pyXConfigureEvent.width = configure_event.width
+        pyXConfigureEvent.height = configure_event.height
+        pyXConfigureEvent.border_width = configure_event.border_width
+        pyXConfigureEvent.above = configure_event.above
+        pyXConfigureEvent.override_redirect = configure_event.override_redirect
+        return pyXConfigureEvent
+
+    @staticmethod
+    def _new_from_python_(
+        int type,
+        unsigned long serial,
+        send_event: bool,
+        PyDisplay display,
+        xlib.Window event,
+        xlib.Window window,
+        int x,
+        int y,
+        int width,
+        int height,
+        int border_width,
+        xlib.Window above,
+        override_redirect: bool
+    ) -> PyXConfigureEvent:
+        cdef xlib.XConfigureEvent xConfigureEvent = xlib.XConfigureEvent(  # type: ignore
+            type=type,
+            serial=serial,
+            send_event=<int>send_event,
+            display=display._display,
+            event=event,
+            window=window,
+            x=x,
+            y=y,
+            width=width,
+            height=height,
+            border_width=border_width,
+            above=above,
+            override_redirect=<int>override_redirect
+        )
+        return PyXConfigureEvent._new_(configure_event=&xConfigureEvent)
 
 cdef class PyXPropertyEvent(PyXEvent):
     cdef public xlib.Atom atom
@@ -1025,6 +1158,9 @@ class CONSTANTS(pyenum.IntEnum):
     NoSymbol = xlib.NoSymbol
     AnyKey = xlib.AnyKey
     XkbUseCoreKbd = xlib.XkbUseCoreKbd
+    RevertToNone = xlib.RevertToNone
+    RevertToPointerRoot = xlib.RevertToPointerRoot
+    RevertToParent = xlib.RevertToParent
 
 class EVENT_TYPES(pyenum.IntEnum):
     # Generic event
@@ -1103,6 +1239,8 @@ class INPUT_EVENT_MASKS(pyenum.IntEnum):
     FocusChangeMask = xlib.FocusChangeMask
     KeyPressMask = xlib.KeyPressMask
     KeyReleaseMask = xlib.KeyReleaseMask
+    ButtonPressMask = xlib.ButtonPressMask
+    ButtonReleaseMask = xlib.ButtonReleaseMask
 
 class KEY_MASKS(pyenum.IntEnum):
     AnyModifier = xlib.AnyModifier
@@ -1122,6 +1260,7 @@ class BUTTON_MASKS(pyenum.IntEnum):
     Button5Mask = xlib.Button5Mask
 
 class BUTTONS(pyenum.IntEnum):
+    AnyButton = xlib.AnyButton
     Button1 = xlib.Button1
     Button2 = xlib.Button2
     Button3 = xlib.Button3
@@ -1299,6 +1438,69 @@ def PyXGrabKey(
 
 def PyXUngrabKey(display: PyDisplay, keycode: int, modifiers: int, window: int) -> int:
     return xlib.XUngrabKey(display=display._display, keycode=keycode, modifiers=modifiers, window=window)
+
+def PyXCreateOverrideRedirectWindow(display: PyDisplay, parent: int, width: int, height: int) -> int:
+    cdef xlib.XSetWindowAttributes attrs
+    memset(&attrs, 0, sizeof(attrs))
+    attrs.override_redirect = True
+    return xlib.XCreateWindow(
+        display._display,
+        parent,
+        0, 0, width, height, 0,
+        0,
+        xlib.InputOnly,
+        <xlib.Visual *>0,
+        xlib.CWOverrideRedirect,
+        &attrs,
+    )
+
+def PyXMapWindow(display: PyDisplay, window: int) -> int:
+    return xlib.XMapWindow(display=display._display, window=window)
+
+def PyXDestroyWindow(display: PyDisplay, window: int) -> int:
+    return xlib.XDestroyWindow(display=display._display, window=window)
+
+def PyXSetInputFocus(display: PyDisplay, window: int, revert_to: int) -> int:
+    return xlib.XSetInputFocus(
+        display=display._display,
+        focus=window,
+        revert_to=revert_to,
+        time=xlib.CurrentTime,
+    )
+
+def PyXGetInputFocus(display: PyDisplay) -> tuple[int, int]:
+    cdef xlib.Window focus = 0
+    cdef int revert_to = 0
+    _ = xlib.XGetInputFocus(display=display._display, focus_return=&focus, revert_to_return=&revert_to)
+    return (focus, revert_to)
+
+def PyXGrabButton(
+    display: PyDisplay,
+    button: int,
+    modifiers: int,
+    window: int,
+    owner_events: bool,
+    event_mask: int,
+    pointer_mode: int,
+    keyboard_mode: int,
+    confine_to: int,
+    cursor: int,
+) -> int:
+    return xlib.XGrabButton(
+        display=display._display,
+        button=button,
+        modifiers=modifiers,
+        grab_window=window,
+        owner_events=<int>owner_events,
+        event_mask=event_mask,
+        pointer_mode=pointer_mode,
+        keyboard_mode=keyboard_mode,
+        confine_to=confine_to,
+        cursor=cursor,
+    )
+
+def PyXUngrabButton(display: PyDisplay, button: int, modifiers: int, window: int) -> int:
+    return xlib.XUngrabButton(display=display._display, button=button, modifiers=modifiers, grab_window=window)
 
 def PyXSelectInput(display: PyDisplay, window: int, event_mask: int) -> int:
     return xlib.XSelectInput(display=display._display, window=window, event_mask=event_mask)
@@ -1507,6 +1709,26 @@ def PyXkbLockGroup(display: PyDisplay, device_spec: int, group: int) -> int:
 
 def PyXFlush(display: PyDisplay) -> int:
     return xlib.XFlush(display=display._display)
+
+def PyXTestQueryExtension(display: PyDisplay) -> bool:
+    cdef int event_base = 0
+    cdef int error_base = 0
+    cdef int major = 0
+    cdef int minor = 0
+    return bool(
+        xlib.XTestQueryExtension(
+            display._display, &event_base, &error_base, &major, &minor
+        )
+    )
+
+def PyXTestFakeKeyEvent(display: PyDisplay, keycode: int, press: bool, delay: int) -> int:
+    return xlib.XTestFakeKeyEvent(display._display, keycode, <int>press, delay)
+
+def PyXTestFakeButtonEvent(display: PyDisplay, button: int, press: bool, delay: int) -> int:
+    return xlib.XTestFakeButtonEvent(display._display, button, <int>press, delay)
+
+def PyXTestFakeMotionEvent(display: PyDisplay, screen: int, x: int, y: int, delay: int) -> int:
+    return xlib.XTestFakeMotionEvent(display._display, screen, x, y, delay)
 
 def PyXGetAtomName(display: PyDisplay, atom: int) -> str:
     key: tuple[int, int] = (<uintptr_t>display._display, atom)
@@ -1733,6 +1955,12 @@ def PyXNextEvent(display: PyDisplay) -> PyXEvent:
             return PyXCreateWindowEvent._new_(create_window_event=&event.xcreatewindow)
         elif event_type == EVENT_TYPES.DestroyNotify:
             return PyXDestroyWindowEvent._new_(destroy_window_event=&event.xdestroywindow)
+        elif event_type == EVENT_TYPES.MapNotify:
+            return PyXMapEvent._new_(map_event=&event.xmap)
+        elif event_type == EVENT_TYPES.UnmapNotify:
+            return PyXUnmapEvent._new_(unmap_event=&event.xunmap)
+        elif event_type == EVENT_TYPES.ConfigureNotify:
+            return PyXConfigureEvent._new_(configure_event=&event.xconfigure)
         elif event_type == EVENT_TYPES.PropertyNotify:
             return PyXPropertyEvent._new_(property_event=&event.xproperty)
         elif event_type == EVENT_TYPES.ClientMessage:

@@ -41,6 +41,9 @@ packages = [
     "orcsome3.libs.cython_libs",
 ]
 
+[tool.setuptools.cmdclass]
+build_py = "orcsome3.libs.build:BuildPy"
+
 [tool.setuptools.package-data]
 "orcsome3" = ["py.typed", "icons/hicolor/index.theme", "icons/hicolor/scalable/apps/*.svg"]
 "orcsome3.libs.cython_libs" = ["**/*.pxd", "**/*.pyx"]

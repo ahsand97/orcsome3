@@ -1,4 +1,4 @@
-"""Window manager singleton, Window objects, and rc.py signal decorators (`on_key`, `on_create`, …).
+"""Window manager singleton, Window objects, and config.py signal decorators (`on_key`, `on_create`, `on_focus`, …).
 
 `KeyboardModifiers`, `WindowMatchers`, and `KeyDefinition` live in `orcsome3.keys` and are re-exported here.
 """
@@ -26,9 +26,38 @@ _logger: logging.Logger = logging.getLogger(name=__name__)
 _ignore_logger: bool = False
 
 _KeyHandler: TypeAlias = Callable[[xlib.TYPES.Cython_Window, xlib.XKeyEvent], None]
+_ButtonHandler: TypeAlias = Callable[[xlib.TYPES.Cython_Window, xlib.XButtonEvent], None]
+_ClientMessageHandler: TypeAlias = Callable[[xlib.TYPES.Cython_Window, xlib.XClientMessageEvent], None]
 _CbNone = TypeVar("_CbNone", bound=Callable[[], None])
 _CbKey = TypeVar("_CbKey", bound=Callable[..., None])
+_CbButton = TypeVar("_CbButton", bound=Callable[..., None])
+_CbClient = TypeVar("_CbClient", bound=Callable[..., None])
+_CbStruct = TypeVar("_CbStruct", bound=Callable[..., None])
 _CbTimer = TypeVar("_CbTimer", bound=Callable[[], Optional[bool]])
+_WindowCbs: TypeAlias = dict[Optional[xlib.TYPES.Cython_Window], list[Callable[[], None]]]
+_WindowEventCbs: TypeAlias = dict[Optional[xlib.TYPES.Cython_Window], list[Callable[..., None]]]
+# [press, release]; one XGrabKey is shared when both on_key and on_key_release bind the same combo
+_KeyGrabSlots: TypeAlias = list[Optional[_KeyHandler]]
+
+# ButtonPress.state includes other buttons held; strip those so Control+Button1 still matches.
+_BUTTON_STATE_MASK: int = (
+    xlib.BUTTON_MASKS.Button1Mask.value
+    | xlib.BUTTON_MASKS.Button2Mask.value
+    | xlib.BUTTON_MASKS.Button3Mask.value
+    | xlib.BUTTON_MASKS.Button4Mask.value
+    | xlib.BUTTON_MASKS.Button5Mask.value
+)
+
+
+def _modifiers_mask(modifiers: Union[int, KeyboardModifiers, list[KeyboardModifiers]]) -> int:
+    """OR modifier masks. A `KeyboardModifiers` member is an `int` subclass, so `int(member)` is the X mask."""
+    if isinstance(modifiers, list):
+        mask: int = KeyboardModifiers.NoModifiers.value
+        for modifier in modifiers:
+            mask |= int(modifier)
+        return mask
+    return int(modifiers)
+
 
 # CapsLock (Lock) and NumLock (Mod2) must be grabbed too or hotkeys miss when those locks are on.
 IGNORED_KEY_MASKS: list[int] = [
@@ -106,11 +135,16 @@ class WindowManager(SingletonMixin):
         self._event_handlers: dict[xlib.XEvent.EVENT_TYPES, Callable[[xlib.XEvent], None]] = {
             xlib.XEvent.EVENT_TYPES.KeyPress: self._key_press_event_handler,
             xlib.XEvent.EVENT_TYPES.KeyRelease: self._handle_keyrelease,
+            xlib.XEvent.EVENT_TYPES.ButtonPress: self._handle_button,
             xlib.XEvent.EVENT_TYPES.CreateNotify: self._handle_create,
             xlib.XEvent.EVENT_TYPES.DestroyNotify: self._handle_destroy,
+            xlib.XEvent.EVENT_TYPES.MapNotify: self._handle_map,
+            xlib.XEvent.EVENT_TYPES.UnmapNotify: self._handle_unmap,
+            xlib.XEvent.EVENT_TYPES.ConfigureNotify: self._handle_configure,
             xlib.XEvent.EVENT_TYPES.FocusIn: self._handle_focus,
             xlib.XEvent.EVENT_TYPES.FocusOut: self._handle_focus,
             xlib.XEvent.EVENT_TYPES.PropertyNotify: self._handle_property,
+            xlib.XEvent.EVENT_TYPES.ClientMessage: self._handle_client_message,
         }
         self._restart_handler: Optional[Callable[[], None]] = None
         self.focus_history: list[xlib.TYPES.Cython_Window] = []
@@ -125,11 +159,22 @@ class WindowManager(SingletonMixin):
         self._startup: bool = False
         self._inited: bool = False
         self._key_handlers: dict[Optional[WindowMatchers], dict[KeyDefinition, _KeyHandler]] = {}
-        self._key_grabs: dict[xlib.TYPES.Cython_Window, dict[tuple[int, xlib.TYPES.Cython_KeyCode], _KeyHandler]] = {}
+        self._key_release_handlers: dict[Optional[WindowMatchers], dict[KeyDefinition, _KeyHandler]] = {}
+        self._key_grabs: dict[xlib.TYPES.Cython_Window, dict[tuple[int, xlib.TYPES.Cython_KeyCode], _KeyGrabSlots]] = {}
+        self._button_handlers: dict[Optional[WindowMatchers], dict[tuple[int, int], _ButtonHandler]] = {}
+        self._button_grabs: dict[xlib.TYPES.Cython_Window, dict[tuple[int, int], _ButtonHandler]] = {}
         self._create_handlers: list[Callable[[], None]] = []
-        self._destroy_handlers: dict[Optional[xlib.TYPES.Cython_Window], list[Callable[[], None]]] = {}
+        self._destroy_handlers: _WindowCbs = {}
+        self._focus_handlers: _WindowCbs = {}
+        self._unfocus_handlers: _WindowCbs = {}
+        self._map_handlers: _WindowEventCbs = {}
+        self._unmap_handlers: _WindowEventCbs = {}
+        self._configure_handlers: _WindowEventCbs = {}
         self._property_handlers: dict[
             xlib.TYPES.Cython_Atom, dict[Optional[xlib.TYPES.Cython_Window], list[Callable[[], None]]]
+        ] = {}
+        self._client_message_handlers: dict[
+            xlib.TYPES.Cython_Atom, dict[Optional[xlib.TYPES.Cython_Window], list[_ClientMessageHandler]]
         ] = {}
         self._timer_handlers: list[Callable[[], Optional[bool]]] = []
         self._init_handlers: list[Callable[[], None]] = []
@@ -146,7 +191,7 @@ class WindowManager(SingletonMixin):
 
     @property
     def event_window(self) -> Window:
-        """Window associated with the current event (create, destroy, property, key)."""
+        """Window associated with the current event (create, destroy, property, key, map, focus, …)."""
         return cast(Window, self._event_window)
 
     @property
@@ -194,9 +239,39 @@ class WindowManager(SingletonMixin):
 
     # ------------------------------------------  DECORATORS  ------------------------------------------
     def _grab_key_binding(
-        self, window: xlib.TYPES.Cython_Window, key_definition: KeyDefinition, handler: _KeyHandler
+        self,
+        window: xlib.TYPES.Cython_Window,
+        key_definition: KeyDefinition,
+        handler: _KeyHandler,
+        *,
+        release: bool = False,
     ) -> None:
         """XGrabKey on `window` for the binding, once per CapsLock/NumLock combination in `IGNORED_KEY_MASKS`."""
+        modifiers_value, keycode = key_definition.get_modifiers_value_and_keycode(display=self.display)
+        slot: int = 1 if release else 0
+        for ignored_key_mask in IGNORED_KEY_MASKS:
+            mask: int = modifiers_value | ignored_key_mask
+            xlib.x_grab_key(
+                display=self.display,
+                window=window,
+                keycode=keycode,
+                modifiers=mask,
+                owner_events=False,
+                pointer_mode=xlib.GRAB_MODE.GrabModeAsync,
+                keyboard_mode=xlib.GRAB_MODE.GrabModeAsync,
+            )
+            slots: _KeyGrabSlots = self._key_grabs.setdefault(window, {}).setdefault((mask, keycode), [None, None])
+            slots[slot] = handler
+
+    def _x_ungrab_key_binding(self, window: xlib.TYPES.Cython_Window, key_definition: KeyDefinition) -> None:
+        """XUngrabKey for the CapsLock/NumLock variants. Does not touch `_key_grabs` (press/release share the grab)."""
+        modifiers_value, keycode = key_definition.get_modifiers_value_and_keycode(display=self.display)
+        for ignored_key_mask in IGNORED_KEY_MASKS:
+            mask: int = modifiers_value | ignored_key_mask
+            xlib.x_ungrab_key(display=self.display, keycode=keycode, modifiers=mask, window=window)
+
+    def _x_grab_key_binding(self, window: xlib.TYPES.Cython_Window, key_definition: KeyDefinition) -> None:
+        """XGrabKey for the CapsLock/NumLock variants. Does not touch `_key_grabs`."""
         modifiers_value, keycode = key_definition.get_modifiers_value_and_keycode(display=self.display)
         for ignored_key_mask in IGNORED_KEY_MASKS:
             mask: int = modifiers_value | ignored_key_mask
@@ -209,24 +284,16 @@ class WindowManager(SingletonMixin):
                 pointer_mode=xlib.GRAB_MODE.GrabModeAsync,
                 keyboard_mode=xlib.GRAB_MODE.GrabModeAsync,
             )
-            self._key_grabs.setdefault(window, {})[(mask, keycode)] = handler
-
-    def _ungrab_key_binding(self, window: xlib.TYPES.Cython_Window, key_definition: KeyDefinition) -> None:
-        """XUngrabKey for the CapsLock/NumLock variants of `key_definition` on `window`."""
-        modifiers_value, keycode = key_definition.get_modifiers_value_and_keycode(display=self.display)
-        grabs: dict[tuple[int, xlib.TYPES.Cython_KeyCode], _KeyHandler] = self._key_grabs.get(window, {})
-        for ignored_key_mask in IGNORED_KEY_MASKS:
-            mask: int = modifiers_value | ignored_key_mask
-            xlib.x_ungrab_key(display=self.display, keycode=keycode, modifiers=mask, window=window)
-            _ = grabs.pop((mask, keycode), None)
-        if not grabs:
-            _ = self._key_grabs.pop(window, None)
 
     def _ungrab_handler(self, handler: _KeyHandler) -> None:
         """Drop every X grab whose callback is `handler` (window ids are reused by the server)."""
         for window, grabs in list(self._key_grabs.items()):
-            for (mask, keycode), bound in list(grabs.items()):
-                if bound is not handler:
+            for (mask, keycode), slots in list(grabs.items()):
+                if slots[0] is handler:
+                    slots[0] = None
+                if slots[1] is handler:
+                    slots[1] = None
+                if slots[0] is not None or slots[1] is not None:
                     continue
                 xlib.x_ungrab_key(display=self.display, keycode=keycode, modifiers=mask, window=window)
                 del grabs[(mask, keycode)]
@@ -234,22 +301,140 @@ class WindowManager(SingletonMixin):
                 del self._key_grabs[window]
 
     def _install_key_binding(
-        self, window_matcher: Optional[WindowMatchers], key_definition: KeyDefinition, handler: _KeyHandler
+        self,
+        window_matcher: Optional[WindowMatchers],
+        key_definition: KeyDefinition,
+        handler: _KeyHandler,
+        *,
+        release: bool = False,
     ) -> None:
         """Grab now: root if `window_matcher` is None, otherwise every matching mapped client."""
         if window_matcher is None:
-            self._grab_key_binding(window=self.root, key_definition=key_definition, handler=handler)
+            self._grab_key_binding(window=self.root, key_definition=key_definition, handler=handler, release=release)
             return
         for client in self.get_clients():
             if client.matches(matcher=window_matcher):
-                self._grab_key_binding(window=client, key_definition=key_definition, handler=handler)
+                self._grab_key_binding(window=client, key_definition=key_definition, handler=handler, release=release)
 
-    def _propagate_grabbed_key(
-        self, key_definition: KeyDefinition, handler: _KeyHandler, x_key_event: xlib.XKeyEvent
-    ) -> None:
-        """Temporarily ungrab so the KeyPress can reach the focused client (or the grabbed window), then re-grab."""
+    def _propagate_grabbed_key(self, key_definition: KeyDefinition, x_key_event: xlib.XKeyEvent) -> None:
+        """Temporarily ungrab so the key event can reach the focused client (or the grabbed window), then re-grab."""
         grab_window: xlib.TYPES.Cython_Window = x_key_event.window
-        self._ungrab_key_binding(window=grab_window, key_definition=key_definition)
+        self._x_ungrab_key_binding(window=grab_window, key_definition=key_definition)
+        target: xlib.TYPES.Cython_Window = grab_window
+        if grab_window == self.root:
+            focused: Optional[Window] = self.current_window
+            if focused is not None:
+                target = focused
+        event_mask: xlib.INPUT_EVENT_MASKS = (
+            xlib.INPUT_EVENT_MASKS.KeyReleaseMask
+            if x_key_event.type == xlib.XEvent.EVENT_TYPES.KeyRelease
+            else xlib.INPUT_EVENT_MASKS.KeyPressMask
+        )
+        xlib.x_send_event(
+            display=self.display,
+            window=target,
+            propagate=False,
+            xevent=x_key_event,
+            event_masks=event_mask,
+        )
+        xlib.x_flush(display=self.display)
+        self._x_grab_key_binding(window=grab_window, key_definition=key_definition)
+
+    def _install_global_key_handlers(self) -> None:
+        """Grab `on_key` / `on_key_release` bindings that have no window matcher on the root window."""
+        for key_definition, handler in self._key_handlers.get(None, {}).items():
+            self._grab_key_binding(window=self.root, key_definition=key_definition, handler=handler)
+        for key_definition, handler in self._key_release_handlers.get(None, {}).items():
+            self._grab_key_binding(window=self.root, key_definition=key_definition, handler=handler, release=True)
+
+    def _install_key_handlers_for_window(self, window: Window) -> None:
+        """Grab `on_key` / `on_key_release` bindings whose `WindowMatchers` match `window`."""
+        for window_matcher, key_bindings in self._key_handlers.items():
+            if window_matcher is None or not window.matches(matcher=window_matcher):
+                continue
+            for key_definition, handler in key_bindings.items():
+                self._grab_key_binding(window=window, key_definition=key_definition, handler=handler)
+        for window_matcher, key_bindings in self._key_release_handlers.items():
+            if window_matcher is None or not window.matches(matcher=window_matcher):
+                continue
+            for key_definition, handler in key_bindings.items():
+                self._grab_key_binding(window=window, key_definition=key_definition, handler=handler, release=True)
+
+    def _grab_button_binding(
+        self,
+        window: xlib.TYPES.Cython_Window,
+        button: int,
+        modifiers_value: int,
+        handler: _ButtonHandler,
+    ) -> None:
+        """XGrabButton on `window`, once per CapsLock/NumLock combination in `IGNORED_KEY_MASKS`."""
+        for ignored_key_mask in IGNORED_KEY_MASKS:
+            mask: int = modifiers_value | ignored_key_mask
+            xlib.x_grab_button(
+                display=self.display,
+                window=window,
+                button=button,
+                modifiers=mask,
+                owner_events=False,
+                event_mask=xlib.INPUT_EVENT_MASKS.ButtonPressMask.value,
+                pointer_mode=xlib.GRAB_MODE.GrabModeAsync,
+                keyboard_mode=xlib.GRAB_MODE.GrabModeAsync,
+            )
+            self._button_grabs.setdefault(window, {})[(mask, button)] = handler
+
+    def _x_ungrab_button_binding(self, window: xlib.TYPES.Cython_Window, button: int, modifiers_value: int) -> None:
+        """XUngrabButton for the CapsLock/NumLock variants. Does not touch `_button_grabs`."""
+        for ignored_key_mask in IGNORED_KEY_MASKS:
+            mask: int = modifiers_value | ignored_key_mask
+            xlib.x_ungrab_button(display=self.display, button=button, modifiers=mask, window=window)
+
+    def _x_grab_button_binding(self, window: xlib.TYPES.Cython_Window, button: int, modifiers_value: int) -> None:
+        """XGrabButton for the CapsLock/NumLock variants. Does not touch `_button_grabs`."""
+        for ignored_key_mask in IGNORED_KEY_MASKS:
+            mask: int = modifiers_value | ignored_key_mask
+            xlib.x_grab_button(
+                display=self.display,
+                window=window,
+                button=button,
+                modifiers=mask,
+                owner_events=False,
+                event_mask=xlib.INPUT_EVENT_MASKS.ButtonPressMask.value,
+                pointer_mode=xlib.GRAB_MODE.GrabModeAsync,
+                keyboard_mode=xlib.GRAB_MODE.GrabModeAsync,
+            )
+
+    def _ungrab_button_handler(self, handler: _ButtonHandler) -> None:
+        """Drop every button grab whose callback is `handler`."""
+        for window, grabs in list(self._button_grabs.items()):
+            for (mask, button), bound in list(grabs.items()):
+                if bound is not handler:
+                    continue
+                xlib.x_ungrab_button(display=self.display, button=button, modifiers=mask, window=window)
+                del grabs[(mask, button)]
+            if not grabs:
+                del self._button_grabs[window]
+
+    def _install_button_binding(
+        self,
+        window_matcher: Optional[WindowMatchers],
+        button: int,
+        modifiers_value: int,
+        handler: _ButtonHandler,
+    ) -> None:
+        """Grab now: root if `window_matcher` is None, otherwise every matching mapped client."""
+        if window_matcher is None:
+            self._grab_button_binding(window=self.root, button=button, modifiers_value=modifiers_value, handler=handler)
+            return
+        for client in self.get_clients():
+            if client.matches(matcher=window_matcher):
+                self._grab_button_binding(
+                    window=client, button=button, modifiers_value=modifiers_value, handler=handler
+                )
+
+    def _propagate_grabbed_button(self, button: int, modifiers_value: int, x_button_event: xlib.XButtonEvent) -> None:
+        """Temporarily ungrab so the ButtonPress can reach the focused client (or the grabbed window), then re-grab."""
+        grab_window: xlib.TYPES.Cython_Window = x_button_event.window
+        self._x_ungrab_button_binding(window=grab_window, button=button, modifiers_value=modifiers_value)
         target: xlib.TYPES.Cython_Window = grab_window
         if grab_window == self.root:
             focused: Optional[Window] = self.current_window
@@ -259,35 +444,39 @@ class WindowManager(SingletonMixin):
             display=self.display,
             window=target,
             propagate=False,
-            xevent=x_key_event,
-            event_masks=xlib.INPUT_EVENT_MASKS.KeyPressMask,
+            xevent=x_button_event,
+            event_masks=xlib.INPUT_EVENT_MASKS.ButtonPressMask,
         )
         xlib.x_flush(display=self.display)
-        self._grab_key_binding(window=grab_window, key_definition=key_definition, handler=handler)
+        self._x_grab_button_binding(window=grab_window, button=button, modifiers_value=modifiers_value)
 
-    def _install_global_key_handlers(self) -> None:
-        """Grab `on_key` bindings that have no window matcher on the root window."""
-        for key_definition, handler in self._key_handlers.get(None, {}).items():
-            self._grab_key_binding(window=self.root, key_definition=key_definition, handler=handler)
+    def _install_global_button_handlers(self) -> None:
+        """Grab `on_button` bindings that have no window matcher on the root window."""
+        for (modifiers_value, button), handler in self._button_handlers.get(None, {}).items():
+            self._grab_button_binding(window=self.root, button=button, modifiers_value=modifiers_value, handler=handler)
 
-    def _install_key_handlers_for_window(self, window: Window) -> None:
-        """Grab `on_key` bindings whose `WindowMatchers` match `window`."""
-        for window_matcher, key_bindings in self._key_handlers.items():
+    def _install_button_handlers_for_window(self, window: Window) -> None:
+        """Grab `on_button` bindings whose `WindowMatchers` match `window`."""
+        for window_matcher, bindings in self._button_handlers.items():
             if window_matcher is None or not window.matches(matcher=window_matcher):
                 continue
-            for key_definition, handler in key_bindings.items():
-                self._grab_key_binding(window=window, key_definition=key_definition, handler=handler)
+            for (modifiers_value, button), handler in bindings.items():
+                self._grab_button_binding(
+                    window=window, button=button, modifiers_value=modifiers_value, handler=handler
+                )
 
     def on_key(
         self,
         key_definition: Union[str, KeyDefinition],
         window_matcher: Optional[WindowMatchers] = None,
         propagate_event: bool = False,
+        *,
+        release: bool = False,
     ) -> Callable[[_CbKey], _CbKey]:
         """
         Signal decorator to define a hotkey (`XGrabKey`).
 
-        Bindings are recorded when the decorator runs (`rc.py` import). `init()` grabs them on the X server.
+        Bindings are recorded when the decorator runs (config import). `init()` grabs them on the X server.
         After `init()`, a new `@wm.on_key` grabs immediately (including on already-mapped matching clients).
 
         Args:
@@ -297,7 +486,7 @@ class WindowManager(SingletonMixin):
         - `window_matcher`: `None` (default) grabs on the **root** window — a process-wide hotkey.
           The callback's `window` is that root; use `wm.current_window` for the focused client.
           If set, grabs on every client that matches (at create time, and immediately if already mapped after `init()`).
-        - `propagate_event`: If True, after the handler runs, replay the KeyPress to the focused client
+        - `propagate_event`: If True, after the handler runs, replay the key event to the focused client
           (global grab) or the grabbed window (matcher grab), then re-grab. Defaults to `False` (orcsome3 consumes the key).
 
         Signature of the decorated function::
@@ -355,24 +544,103 @@ class WindowManager(SingletonMixin):
             def wrapper(window: xlib.TYPES.Cython_Window, x_key_event: xlib.XKeyEvent) -> None:
                 original_function(window, x_key_event)
                 if propagate_event:
-                    self._propagate_grabbed_key(
-                        key_definition=parsed_key_definition, handler=wrapper, x_key_event=x_key_event
-                    )
+                    self._propagate_grabbed_key(key_definition=parsed_key_definition, x_key_event=x_key_event)
 
-            self._key_handlers.setdefault(window_matcher, {})[parsed_key_definition] = wrapper
+            table: dict[Optional[WindowMatchers], dict[KeyDefinition, _KeyHandler]] = (
+                self._key_release_handlers if release else self._key_handlers
+            )
+            table.setdefault(window_matcher, {})[parsed_key_definition] = wrapper
 
             def remove() -> None:
-                _ = self._key_handlers.get(window_matcher, {}).pop(parsed_key_definition, None)
+                _ = table.get(window_matcher, {}).pop(parsed_key_definition, None)
                 self._ungrab_handler(handler=wrapper)
 
             setattr(wrapper, "remove", remove)
             if self._inited:
                 self._install_key_binding(
-                    window_matcher=window_matcher, key_definition=parsed_key_definition, handler=wrapper
+                    window_matcher=window_matcher,
+                    key_definition=parsed_key_definition,
+                    handler=wrapper,
+                    release=release,
                 )
             return cast(_CbKey, wrapper)
 
         return decorator_on_key
+
+    def on_key_release(
+        self,
+        key_definition: Union[str, KeyDefinition],
+        window_matcher: Optional[WindowMatchers] = None,
+        propagate_event: bool = False,
+    ) -> Callable[[_CbKey], _CbKey]:
+        """Like `on_key`, but KeyRelease. Shares the `XGrabKey` with a matching `on_key` if both are registered."""
+        return self.on_key(
+            key_definition=key_definition,
+            window_matcher=window_matcher,
+            propagate_event=propagate_event,
+            release=True,
+        )
+
+    def on_button(
+        self,
+        button: Union[int, xlib.BUTTONS],
+        modifiers: Union[int, KeyboardModifiers, list[KeyboardModifiers]] = KeyboardModifiers.NoModifiers,
+        window_matcher: Optional[WindowMatchers] = None,
+        propagate_event: bool = False,
+    ) -> Callable[[_CbButton], _CbButton]:
+        """
+        Signal decorator for a pointer grab (`XGrabButton`). ButtonPress only.
+
+        Args:
+        - `button`: `BUTTONS.Button1`…`Button5` or `BUTTONS.AnyButton`.
+        - `modifiers`: A `KeyboardModifiers` member, an int mask, or a list of members. Defaults to no modifiers.
+        - `window_matcher`: `None` (default) grabs on the **root** window. If set, grabs on matching clients.
+        - `propagate_event`: If True, replay the ButtonPress after the handler, then re-grab.
+
+        Signature of the decorated function::
+
+            def function_cb(window: Window, event: XButtonEvent) -> None: ...
+
+            @wm.on_button(button=BUTTONS.Button1, modifiers=KeyboardModifiers.Control)
+            def on_ctrl_click(window: Window, event: XButtonEvent) -> None:
+                print(event.x, event.y)
+
+        Call `.remove()` on the decorated function to ungrab and unregister.
+        """
+
+        def decorator_on_button(original_function: _CbButton) -> _CbButton:
+            if window_matcher is not None and window_matcher.is_empty():
+                _logger.error(msg="The window matcher provided is empty.")
+                return original_function
+
+            button_n: int = int(button)
+            modifiers_value: int = _modifiers_mask(modifiers=modifiers)
+
+            @wraps(wrapped=original_function)
+            def wrapper(window: xlib.TYPES.Cython_Window, x_button_event: xlib.XButtonEvent) -> None:
+                original_function(window, x_button_event)
+                if propagate_event:
+                    self._propagate_grabbed_button(
+                        button=button_n, modifiers_value=modifiers_value, x_button_event=x_button_event
+                    )
+
+            self._button_handlers.setdefault(window_matcher, {})[(modifiers_value, button_n)] = wrapper
+
+            def remove() -> None:
+                _ = self._button_handlers.get(window_matcher, {}).pop((modifiers_value, button_n), None)
+                self._ungrab_button_handler(handler=wrapper)
+
+            setattr(wrapper, "remove", remove)
+            if self._inited:
+                self._install_button_binding(
+                    window_matcher=window_matcher,
+                    button=button_n,
+                    modifiers_value=modifiers_value,
+                    handler=wrapper,
+                )
+            return cast(_CbButton, wrapper)
+
+        return decorator_on_button
 
     def on_create(self, matcher: Optional[WindowMatchers] = None) -> Callable[[_CbNone], _CbNone]:
         """
@@ -387,7 +655,7 @@ class WindowManager(SingletonMixin):
             def on_any_create() -> None:
                 print(wm.event_window.get_name_and_class())
 
-            @wm.on_create(WindowMatchers(class_="Opera"))
+            @wm.on_create(matcher=WindowMatchers(class_="Opera"))
             def replace_opera() -> None:
                 wm.event_window.close()
 
@@ -403,7 +671,7 @@ class WindowManager(SingletonMixin):
 
         Nested per-window hooks belong here so they are not installed once per existing client at startup::
 
-            @wm.on_manage(WindowMatchers(name="easyeffects", class_="easyeffects"))
+            @wm.on_manage(matcher=WindowMatchers(name="easyeffects", class_="easyeffects"))
             def on_easyeffects() -> None:
                 @wm.on_destroy(window=wm.event_window)
                 def on_easyeffects_gone() -> None:
@@ -416,7 +684,7 @@ class WindowManager(SingletonMixin):
     def on_create_manage(
         self, ignore_startup: bool, matcher: Optional[WindowMatchers] = None
     ) -> Callable[[_CbNone], _CbNone]:
-        """Shared implementation of `on_create` / `on_manage`. Prefer those in `rc.py`.
+        """Shared implementation of `on_create` / `on_manage`. Prefer those in the config.
 
         Args:
         - `ignore_startup`: If True, skip the existing-client sweep in `init()` (`on_manage`)
@@ -445,6 +713,68 @@ class WindowManager(SingletonMixin):
 
         return decorator
 
+    def _window_cb_decorator(
+        self, handlers: _WindowCbs, window: Optional[xlib.TYPES.Cython_Window]
+    ) -> Callable[[_CbNone], _CbNone]:
+        """`on_destroy`-style: `window=None` is every window, else one id. Callback uses `event_window`."""
+
+        def decorator(function: _CbNone) -> _CbNone:
+            def remove() -> None:
+                try:
+                    handlers[window].remove(function)
+                except Exception:
+                    _logger.exception(msg="An exception occurred removing the function.")
+
+            handlers.setdefault(window, []).append(function)
+            setattr(function, "remove", remove)
+            return function
+
+        return decorator
+
+    def _dispatch_window_cbs(self, handlers: _WindowCbs, window: xlib.TYPES.Cython_Window) -> None:
+        """Run `window=None` handlers, then per-id handlers. Sets `event_window`."""
+        self._event_window = Window(window)
+        if None in handlers:
+            for handler in handlers[None]:
+                handler()
+        if window in handlers:
+            for handler in handlers[window]:
+                handler()
+
+    def _window_event_cb_decorator(
+        self, handlers: _WindowEventCbs, window: Optional[xlib.TYPES.Cython_Window]
+    ) -> Callable[[_CbStruct], _CbStruct]:
+        """Like `_window_cb_decorator`, but the callback is `(window, event)`."""
+
+        def decorator(function: _CbStruct) -> _CbStruct:
+            def remove() -> None:
+                try:
+                    handlers[window].remove(function)
+                except Exception:
+                    _logger.exception(msg="An exception occurred removing the function.")
+
+            handlers.setdefault(window, []).append(function)
+            setattr(function, "remove", remove)
+            return function
+
+        return decorator
+
+    def _dispatch_window_event_cbs(
+        self,
+        handlers: _WindowEventCbs,
+        window: xlib.TYPES.Cython_Window,
+        event: xlib.XEvent,
+    ) -> None:
+        """Run `window=None` handlers, then per-id handlers. Sets `event_window`."""
+        self._event_window = Window(window)
+        event_window: Window = self._event_window
+        if None in handlers:
+            for handler in handlers[None]:
+                handler(event_window, event)
+        if window in handlers:
+            for handler in handlers[window]:
+                handler(event_window, event)
+
     def on_destroy(self, window: Optional[xlib.TYPES.Cython_Window] = None) -> Callable[[_CbNone], _CbNone]:
         """Signal decorator for DestroyNotify.
 
@@ -457,7 +787,7 @@ class WindowManager(SingletonMixin):
             def cb_destroy_window() -> None:
                 print(f"The window {wm.event_window} was destroyed")
 
-            @wm.on_manage(WindowMatchers(name="easyeffects", class_="easyeffects"))
+            @wm.on_manage(matcher=WindowMatchers(name="easyeffects", class_="easyeffects"))
             def on_create_easyeffects() -> None:
                 @wm.on_destroy(window=wm.event_window)
                 def on_destroy_easyeffects() -> None:
@@ -465,19 +795,7 @@ class WindowManager(SingletonMixin):
 
         Call `.remove()` on the decorated function to unregister.
         """
-
-        def decorator(function: _CbNone) -> _CbNone:
-            def remove() -> None:
-                try:
-                    self._destroy_handlers[window].remove(function)
-                except Exception:
-                    _logger.exception(msg="An exception occurred removing the function.")
-
-            self._destroy_handlers.setdefault(window, []).append(function)
-            setattr(function, "remove", remove)
-            return function
-
-        return decorator
+        return self._window_cb_decorator(handlers=self._destroy_handlers, window=window)
 
     def on_property_change(
         self, property: str, window: Optional[xlib.TYPES.Cython_Window] = None
@@ -517,6 +835,84 @@ class WindowManager(SingletonMixin):
             ).append(function)
             setattr(function, "remove", remove)
             return function
+
+        return decorator
+
+    def on_focus(self, window: Optional[xlib.TYPES.Cython_Window] = None) -> Callable[[_CbNone], _CbNone]:
+        """Signal decorator for FocusIn (`NotifyNormal` / `NotifyWhileGrabbed`).
+
+        `@wm.on_focus()` runs for every focused window. Pass `window=` (typically `wm.event_window`
+        from `on_manage`) to listen to one id. Use `event_window` inside the callback.
+
+        Call `.remove()` on the decorated function to unregister.
+        """
+        return self._window_cb_decorator(handlers=self._focus_handlers, window=window)
+
+    def on_unfocus(self, window: Optional[xlib.TYPES.Cython_Window] = None) -> Callable[[_CbNone], _CbNone]:
+        """Signal decorator for FocusOut (`NotifyNormal` / `NotifyWhileGrabbed`). Same `window=` rules as `on_focus`."""
+        return self._window_cb_decorator(handlers=self._unfocus_handlers, window=window)
+
+    def on_map(self, window: Optional[xlib.TYPES.Cython_Window] = None) -> Callable[[_CbStruct], _CbStruct]:
+        """Signal decorator for MapNotify. Same `window=` rules as `on_destroy`.
+
+        Signature::
+
+            def function_cb(window: Window, event: XMapEvent) -> None: ...
+        """
+        return self._window_event_cb_decorator(handlers=self._map_handlers, window=window)
+
+    def on_unmap(self, window: Optional[xlib.TYPES.Cython_Window] = None) -> Callable[[_CbStruct], _CbStruct]:
+        """Signal decorator for UnmapNotify. Same `window=` rules as `on_destroy`.
+
+        Signature::
+
+            def function_cb(window: Window, event: XUnmapEvent) -> None: ...
+        """
+        return self._window_event_cb_decorator(handlers=self._unmap_handlers, window=window)
+
+    def on_configure(self, window: Optional[xlib.TYPES.Cython_Window] = None) -> Callable[[_CbStruct], _CbStruct]:
+        """Signal decorator for ConfigureNotify. Same `window=` rules as `on_destroy`.
+
+        Fires often during interactive resize. `event.x`/`event.y` are relative to the parent;
+        `event.width`/`event.height` are the size from this event (not a later `get_geometry()`).
+
+        Signature::
+
+            def function_cb(window: Window, event: XConfigureEvent) -> None: ...
+        """
+        return self._window_event_cb_decorator(handlers=self._configure_handlers, window=window)
+
+    def on_client_message(
+        self, message_type: str, window: Optional[xlib.TYPES.Cython_Window] = None
+    ) -> Callable[[_CbClient], _CbClient]:
+        """Signal decorator for ClientMessage.
+
+        `message_type` is an atom name (`_NET_WM_STATE`, `_NET_ACTIVE_WINDOW`, …). `window=None` (default)
+        is every destination this connection sees; pass `window=` to watch one id.
+
+        EWMH messages sent to the root with `SubstructureNotify` arrive here (`event_window` is the root).
+        Messages targeted at other clients' windows are only delivered to this connection if the sender
+        used a non-zero event mask this process selected.
+
+        Signature of the decorated function::
+
+            def function_cb(window: Window, event: XClientMessageEvent) -> None: ...
+
+        Call `.remove()` on the decorated function to unregister.
+        """
+
+        def decorator(original_function: _CbClient) -> _CbClient:
+            atom: xlib.TYPES.Cython_Atom = self.atom_cache.get_atom(name=message_type)
+
+            def remove() -> None:
+                try:
+                    self._client_message_handlers[atom][window].remove(original_function)
+                except Exception:
+                    _logger.exception(msg="An exception occurred removing the function.")
+
+            self._client_message_handlers.setdefault(atom, {}).setdefault(window, []).append(original_function)
+            setattr(original_function, "remove", remove)
+            return original_function
 
         return decorator
 
@@ -605,6 +1001,7 @@ class WindowManager(SingletonMixin):
             handler()
 
         self._install_global_key_handlers()
+        self._install_global_button_handlers()
         self._startup = True
         for window in self.get_clients():
             self._process_create_window(window=window)
@@ -625,20 +1022,29 @@ class WindowManager(SingletonMixin):
         xlib.x_set_error_handler(handler=default_error_handler)
 
     def stop(self, exit: bool = False) -> None:
-        """Clear handlers and ungrab keys.
+        """Clear handlers and ungrab keys and buttons.
 
         Args:
-        - `exit`: If True, close the X display (process shutdown). If False, ungrab keys so a restart can re-init.
+        - `exit`: If True, close the X display (process shutdown). If False, ungrab keys/buttons so a restart can re-init.
         """
         self._inited = False
         self._startup = False
         self._wm_name = None
         self._wm_name_loaded = False
         self._key_handlers.clear()
+        self._key_release_handlers.clear()
         self._key_grabs.clear()
+        self._button_handlers.clear()
+        self._button_grabs.clear()
         self._property_handlers.clear()
+        self._client_message_handlers.clear()
         self._create_handlers[:] = []
         self._destroy_handlers.clear()
+        self._focus_handlers.clear()
+        self._unfocus_handlers.clear()
+        self._map_handlers.clear()
+        self._unmap_handlers.clear()
+        self._configure_handlers.clear()
         self.focus_history[:] = []
         self._focus_ids.clear()
 
@@ -649,10 +1055,22 @@ class WindowManager(SingletonMixin):
                 modifiers=xlib.KEY_MASKS.AnyModifier.value,
                 window=self.root,
             )
+            xlib.x_ungrab_button(
+                display=self.display,
+                button=xlib.BUTTONS.AnyButton.value,
+                modifiers=xlib.KEY_MASKS.AnyModifier.value,
+                window=self.root,
+            )
             for window in self.get_clients():
                 xlib.x_ungrab_key(
                     display=self.display,
                     keycode=xlib.CONSTANTS.KB.ANY_KEY,
+                    modifiers=xlib.KEY_MASKS.AnyModifier.value,
+                    window=window,
+                )
+                xlib.x_ungrab_button(
+                    display=self.display,
+                    button=xlib.BUTTONS.AnyButton.value,
                     modifiers=xlib.KEY_MASKS.AnyModifier.value,
                     window=window,
                 )
@@ -758,6 +1176,7 @@ class WindowManager(SingletonMixin):
         for handler in self._create_handlers:
             handler()
         self._install_key_handlers_for_window(window=window)
+        self._install_button_handlers_for_window(window=window)
 
     def _remember_focus(self, window: xlib.TYPES.Cython_Window) -> None:
         """Move `window` to the end of `focus_history` (oldest first)."""
@@ -778,10 +1197,17 @@ class WindowManager(SingletonMixin):
             pass
 
     def _process_remove_window(self, window: xlib.TYPES.Cython_Window) -> None:
-        """Drop destroy/property/key-grab state for a window that is gone (X ids are reused)."""
+        """Drop destroy/property/key-grab/button-grab state for a window that is gone (X ids are reused)."""
         _ = self._key_grabs.pop(window, None)
-        if window in self._destroy_handlers:
-            del self._destroy_handlers[window]
+        _ = self._button_grabs.pop(window, None)
+        for table in (
+            self._destroy_handlers,
+            self._focus_handlers,
+            self._unfocus_handlers,
+        ):
+            _ = table.pop(window, None)
+        for table in (self._map_handlers, self._unmap_handlers, self._configure_handlers):
+            _ = table.pop(window, None)
 
         self._forget_focus(window=window)
 
@@ -792,11 +1218,24 @@ class WindowManager(SingletonMixin):
             if not len(self._property_handlers[atom]):
                 del self._property_handlers[atom]
 
+        for atom, cwhandlers in list(self._client_message_handlers.items()):
+            if window in cwhandlers:
+                del cwhandlers[window]
+
+            if not len(self._client_message_handlers[atom]):
+                del self._client_message_handlers[atom]
+
+    def _lookup_key_handler(self, event: xlib.XKeyEvent, *, release: bool) -> Optional[_KeyHandler]:
+        slots: Optional[_KeyGrabSlots] = self._key_grabs.get(event.window, {}).get((event.state, event.keycode))
+        if slots is None:
+            return None
+        return slots[1 if release else 0]
+
     def _key_press_event_handler(self, event: xlib.XEvent) -> None:
         if not isinstance(event, xlib.XKeyEvent):
             return
 
-        handler: Optional[_KeyHandler] = self._key_grabs.get(event.window, {}).get((event.state, event.keycode))
+        handler: Optional[_KeyHandler] = self._lookup_key_handler(event=event, release=False)
         if handler is None:
             return
 
@@ -804,7 +1243,28 @@ class WindowManager(SingletonMixin):
         handler(self._event_window, event)
 
     def _handle_keyrelease(self, event: xlib.XEvent) -> None:
-        _ = event
+        if not isinstance(event, xlib.XKeyEvent):
+            return
+
+        handler: Optional[_KeyHandler] = self._lookup_key_handler(event=event, release=True)
+        if handler is None:
+            return
+
+        self._event_window = Window(event.window)
+        handler(self._event_window, event)
+
+    def _handle_button(self, event: xlib.XEvent) -> None:
+        if not isinstance(event, xlib.XButtonEvent):
+            return
+        state: int = event.state & ~_BUTTON_STATE_MASK
+        grabs: dict[tuple[int, int], _ButtonHandler] = self._button_grabs.get(event.window, {})
+        handler: Optional[_ButtonHandler] = grabs.get((state, int(event.button)))
+        if handler is None:
+            handler = grabs.get((state, int(xlib.BUTTONS.AnyButton)))
+        if handler is None:
+            return
+        self._event_window = Window(event.window)
+        handler(self._event_window, event)
 
     def _handle_create(self, event: xlib.XEvent) -> None:
         if not isinstance(event, xlib.XCreateWindowEvent):
@@ -828,16 +1288,7 @@ class WindowManager(SingletonMixin):
         if event.window == self._recently_destroyed_window:
             return
         self._recently_destroyed_window = event.window
-        self._event_window = Window(event.window)
-
-        handlers: list[Callable[[], None]] = []
-        if None in self._destroy_handlers:
-            handlers.extend(self._destroy_handlers[None])
-        if event.window in self._destroy_handlers:
-            handlers.extend(self._destroy_handlers[event.window])
-
-        for handler in handlers:
-            handler()
+        self._dispatch_window_cbs(handlers=self._destroy_handlers, window=event.window)
         self._process_remove_window(window=event.window)
 
     def _handle_property(self, event: xlib.XEvent) -> None:
@@ -857,20 +1308,62 @@ class WindowManager(SingletonMixin):
                 for handler in wphandlers[None]:
                     handler()
 
+    def _deliver_structure(
+        self,
+        event: Union[xlib.XMapEvent, xlib.XUnmapEvent, xlib.XConfigureEvent],
+        handlers: _WindowEventCbs,
+    ) -> None:
+        # SubstructureNotify on root duplicates StructureNotify on the client; skip the root copy.
+        if event.event == self.root:
+            return
+        self._dispatch_window_event_cbs(handlers=handlers, window=event.window, event=event)
+
+    def _handle_map(self, event: xlib.XEvent) -> None:
+        if not isinstance(event, xlib.XMapEvent):
+            return
+        self._deliver_structure(event=event, handlers=self._map_handlers)
+
+    def _handle_unmap(self, event: xlib.XEvent) -> None:
+        if not isinstance(event, xlib.XUnmapEvent):
+            return
+        self._deliver_structure(event=event, handlers=self._unmap_handlers)
+
+    def _handle_configure(self, event: xlib.XEvent) -> None:
+        if not isinstance(event, xlib.XConfigureEvent):
+            return
+        self._deliver_structure(event=event, handlers=self._configure_handlers)
+
+    def _handle_client_message(self, event: xlib.XEvent) -> None:
+        if not isinstance(event, xlib.XClientMessageEvent):
+            return
+        atom: xlib.TYPES.Cython_Atom = event.message_type
+        if atom not in self._client_message_handlers:
+            return
+        self._event_window = Window(event.window)
+        wphandlers: dict[Optional[xlib.TYPES.Cython_Window], list[_ClientMessageHandler]] = (
+            self._client_message_handlers[atom]
+        )
+        event_window: Window = self._event_window
+        if event.window in wphandlers:
+            for handler in wphandlers[event.window]:
+                handler(event_window, event)
+        if None in wphandlers:
+            for handler in wphandlers[None]:
+                handler(event_window, event)
+
     def _handle_focus(self, event: xlib.XEvent) -> None:
         if not isinstance(event, xlib.XFocusChangeEvent):
             return
         _logger.debug(msg=event)
+        is_real_focus: bool = event.mode in (
+            xlib.XFocusChangeEvent.NOTIFY_MODE.NotifyNormal,
+            xlib.XFocusChangeEvent.NOTIFY_MODE.NotifyWhileGrabbed,
+        )
         if event.type == xlib.XEvent.EVENT_TYPES.FocusIn:
             self._remember_focus(window=event.window)
-            if (
-                event.mode
-                in (
-                    xlib.XFocusChangeEvent.NOTIFY_MODE.NotifyNormal,
-                    xlib.XFocusChangeEvent.NOTIFY_MODE.NotifyWhileGrabbed,
-                )
-                and self.track_kbd_layout
-            ):
+            if is_real_focus:
+                self._dispatch_window_cbs(handlers=self._focus_handlers, window=event.window)
+            if is_real_focus and self.track_kbd_layout:
                 prop: Optional[xlib.WindowProperty] = Window(event.window).get_property(property_="_ORCSOME_KBD_GROUP")
                 if prop is not None:
                     _ = xlib.x_kb_lock_group(
@@ -878,14 +1371,9 @@ class WindowManager(SingletonMixin):
                         group=xlib.KEYSYM_GROUPS(prop.get_int_list()[0]) if prop else xlib.KEYSYM_GROUPS.XkbGroup1Index,
                     )
         else:
-            if (
-                event.mode
-                in (
-                    xlib.XFocusChangeEvent.NOTIFY_MODE.NotifyNormal,
-                    xlib.XFocusChangeEvent.NOTIFY_MODE.NotifyWhileGrabbed,
-                )
-                and self.track_kbd_layout
-            ):
+            if is_real_focus:
+                self._dispatch_window_cbs(handlers=self._unfocus_handlers, window=event.window)
+            if is_real_focus and self.track_kbd_layout:
                 _ = Window(event.window).set_property(
                     property_name="_ORCSOME_KBD_GROUP",
                     type_="CARDINAL",
@@ -964,7 +1452,7 @@ class WindowManager(SingletonMixin):
         raise _RestartException()
 
     def set_restart_handler(self, handler: Callable[[], None]) -> None:
-        """Called when `restart()` raises; the CLI sets this to reload `rc.py` without exiting."""
+        """Called when `restart()` raises; the CLI sets this to reload the config without exiting."""
         self._restart_handler = handler
 
 

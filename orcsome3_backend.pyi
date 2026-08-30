@@ -14,6 +14,9 @@ class CONSTANTS(IntEnum):
     NoSymbol = 0
     AnyKey = 0
     XkbUseCoreKbd = 256
+    RevertToNone = 0
+    RevertToPointerRoot = 1
+    RevertToParent = 2
 
 class EVENT_TYPES(IntEnum):
     GenericEvent = 35
@@ -61,6 +64,8 @@ class INPUT_EVENT_MASKS(IntEnum):
     FocusChangeMask = 2097152
     KeyPressMask = 1
     KeyReleaseMask = 2
+    ButtonPressMask = 4
+    ButtonReleaseMask = 8
 
 class KEY_MASKS(IntEnum):
     AnyModifier = 32768
@@ -80,6 +85,7 @@ class BUTTON_MASKS(IntEnum):
     Button5Mask = 4096
 
 class BUTTONS(IntEnum):
+    AnyButton = 0
     Button1 = 1
     Button2 = 2
     Button3 = 3
@@ -327,6 +333,60 @@ class PyXDestroyWindowEvent(PyXEvent):
         window: int,
     ) -> PyXDestroyWindowEvent: ...
 
+class PyXMapEvent(PyXEvent):
+    event: int
+    override_redirect: int
+    @staticmethod
+    def _new_from_python_(
+        type: int,
+        serial: int,
+        send_event: bool,
+        display: PyDisplay,
+        event: int,
+        window: int,
+        override_redirect: bool,
+    ) -> PyXMapEvent: ...
+
+class PyXUnmapEvent(PyXEvent):
+    event: int
+    from_configure: int
+    @staticmethod
+    def _new_from_python_(
+        type: int,
+        serial: int,
+        send_event: bool,
+        display: PyDisplay,
+        event: int,
+        window: int,
+        from_configure: bool,
+    ) -> PyXUnmapEvent: ...
+
+class PyXConfigureEvent(PyXEvent):
+    event: int
+    x: int
+    y: int
+    width: int
+    height: int
+    border_width: int
+    above: int
+    override_redirect: int
+    @staticmethod
+    def _new_from_python_(
+        type: int,
+        serial: int,
+        send_event: bool,
+        display: PyDisplay,
+        event: int,
+        window: int,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        border_width: int,
+        above: int,
+        override_redirect: bool,
+    ) -> PyXConfigureEvent: ...
+
 class PyXPropertyEvent(PyXEvent):
     atom: int
     time: int
@@ -489,6 +549,24 @@ def PyXGrabKey(
     keyboard_mode: int,
 ) -> int: ...
 def PyXUngrabKey(display: PyDisplay, keycode: int, modifiers: int, window: int) -> int: ...
+def PyXCreateOverrideRedirectWindow(display: PyDisplay, parent: int, width: int, height: int) -> int: ...
+def PyXMapWindow(display: PyDisplay, window: int) -> int: ...
+def PyXDestroyWindow(display: PyDisplay, window: int) -> int: ...
+def PyXSetInputFocus(display: PyDisplay, window: int, revert_to: int) -> int: ...
+def PyXGetInputFocus(display: PyDisplay) -> tuple[int, int]: ...
+def PyXGrabButton(
+    display: PyDisplay,
+    button: int,
+    modifiers: int,
+    window: int,
+    owner_events: bool,
+    event_mask: int,
+    pointer_mode: int,
+    keyboard_mode: int,
+    confine_to: int,
+    cursor: int,
+) -> int: ...
+def PyXUngrabButton(display: PyDisplay, button: int, modifiers: int, window: int) -> int: ...
 def PyXSelectInput(display: PyDisplay, window: int, event_mask: int) -> int: ...
 def PyXConfigureWindow(display: PyDisplay, window: int, value_mask: int, window_changes: PyXWindowChanges) -> int: ...
 def PyXSync(display: PyDisplay, discard: bool) -> int: ...
@@ -513,6 +591,10 @@ def PyXScreenSaverQueryInfo(display: PyDisplay, window: int) -> Optional[PyXScre
 def PyXkbGetState(display: PyDisplay, device_spec: int) -> PyXkbStateRec: ...
 def PyXkbLockGroup(display: PyDisplay, device_spec: int, group: int) -> int: ...
 def PyXFlush(display: PyDisplay) -> int: ...
+def PyXTestQueryExtension(display: PyDisplay) -> bool: ...
+def PyXTestFakeKeyEvent(display: PyDisplay, keycode: int, press: bool, delay: int) -> int: ...
+def PyXTestFakeButtonEvent(display: PyDisplay, button: int, press: bool, delay: int) -> int: ...
+def PyXTestFakeMotionEvent(display: PyDisplay, screen: int, x: int, y: int, delay: int) -> int: ...
 def PyXGetAtomName(display: PyDisplay, atom: int) -> str: ...
 def PyXSendEvent(display: PyDisplay, window: int, propagate: bool, event_mask: int, xevent: PyXEvent) -> int: ...
 def PySetWindowIcon(display: PyDisplay, window: int, filepath: Path) -> bool: ...

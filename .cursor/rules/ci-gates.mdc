@@ -22,7 +22,7 @@ make format && make lint
 ## Layout
 
 ```text
-rc.py / CLI → orcsome3 (window_manager, notify, run)
+config.py / CLI → orcsome3 (window_manager, notify, run)
             → orcsome3.libs.xlib / ev   (thin Python wrappers)
             → orcsome3_backend          (Cython .pyx / .pxd)
             → orcsome3.libs.build       (static native libs)

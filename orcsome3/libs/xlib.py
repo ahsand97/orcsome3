@@ -48,6 +48,9 @@ class TYPES(metaclass=Final):
         Cython_XFocusChangeEvent: TypeAlias = orcsome3_backend.PyXFocusChangeEvent
         Cython_XCreateWindowEvent: TypeAlias = orcsome3_backend.PyXCreateWindowEvent
         Cython_XDestroyWindowEvent: TypeAlias = orcsome3_backend.PyXDestroyWindowEvent
+        Cython_XMapEvent: TypeAlias = orcsome3_backend.PyXMapEvent
+        Cython_XUnmapEvent: TypeAlias = orcsome3_backend.PyXUnmapEvent
+        Cython_XConfigureEvent: TypeAlias = orcsome3_backend.PyXConfigureEvent
         Cython_XPropertyEvent: TypeAlias = orcsome3_backend.PyXPropertyEvent
         Cython_XClientMessageEvent: TypeAlias = orcsome3_backend.PyXClientMessageEvent
         Cython_XErrorEvent: TypeAlias = orcsome3_backend.PyXErrorEvent
@@ -66,6 +69,10 @@ class CONSTANTS(metaclass=Final):
         ANY_KEY: TYPES.Cython_KeyCode = TYPES.Cython_KeyCode(orcsome3_backend.CONSTANTS.AnyKey)
         X_KB_USE_CORE_KBD: int = orcsome3_backend.CONSTANTS.XkbUseCoreKbd
 
+    REVERT_TO_NONE: int = orcsome3_backend.CONSTANTS.RevertToNone
+    REVERT_TO_POINTER_ROOT: int = orcsome3_backend.CONSTANTS.RevertToPointerRoot
+    REVERT_TO_PARENT: int = orcsome3_backend.CONSTANTS.RevertToParent
+
 
 class INPUT_EVENT_MASKS(int, Enum):
     """
@@ -80,6 +87,8 @@ class INPUT_EVENT_MASKS(int, Enum):
     FocusChangeMask = orcsome3_backend.INPUT_EVENT_MASKS.FocusChangeMask
     KeyPressMask = orcsome3_backend.INPUT_EVENT_MASKS.KeyPressMask
     KeyReleaseMask = orcsome3_backend.INPUT_EVENT_MASKS.KeyReleaseMask
+    ButtonPressMask = orcsome3_backend.INPUT_EVENT_MASKS.ButtonPressMask
+    ButtonReleaseMask = orcsome3_backend.INPUT_EVENT_MASKS.ButtonReleaseMask
 
 
 class KEY_MASKS(int, Enum):
@@ -113,6 +122,7 @@ class BUTTON_MASKS(int, Enum):
 class BUTTONS(int, Enum):
     """Button names"""
 
+    AnyButton = orcsome3_backend.BUTTONS.AnyButton
     Button1 = orcsome3_backend.BUTTONS.Button1
     Button2 = orcsome3_backend.BUTTONS.Button2
     Button3 = orcsome3_backend.BUTTONS.Button3
@@ -396,14 +406,14 @@ class XEvent:
         # XUnmapEvent
         UnmapNotify = EventType(
             id=orcsome3_backend.EVENT_TYPES.UnmapNotify,
-            cython_class=None,
-            python_class=None,
+            cython_class=orcsome3_backend.PyXUnmapEvent,
+            python_class=lambda: XUnmapEvent,
         )
         # XMapEvent
         MapNotify = EventType(
             id=orcsome3_backend.EVENT_TYPES.MapNotify,
-            cython_class=None,
-            python_class=None,
+            cython_class=orcsome3_backend.PyXMapEvent,
+            python_class=lambda: XMapEvent,
         )
         # XMapRequestEvent
         MapRequest = EventType(
@@ -420,8 +430,8 @@ class XEvent:
         # XConfigureEvent
         ConfigureNotify = EventType(
             id=orcsome3_backend.EVENT_TYPES.ConfigureNotify,
-            cython_class=None,
-            python_class=None,
+            cython_class=orcsome3_backend.PyXConfigureEvent,
+            python_class=lambda: XConfigureEvent,
         )
         # XGravityEvent
         GravityNotify = EventType(
@@ -594,6 +604,9 @@ class XEvent:
             XFocusChangeEvent,
             XCreateWindowEvent,
             XDestroyWindowEvent,
+            XMapEvent,
+            XUnmapEvent,
+            XConfigureEvent,
             XPropertyEvent,
             XClientMessageEvent,
         ]
@@ -628,6 +641,18 @@ class XEvent:
             elif self.type == XEvent.EVENT_TYPES.DestroyNotify:
                 return XDestroyWindowEvent._new_from_cython_event_(  # pyright: ignore[reportPrivateUsage]
                     destroy_window_event=cast(TYPES.EVENTS.Cython_XDestroyWindowEvent, cython_instance)
+                )
+            elif self.type == XEvent.EVENT_TYPES.MapNotify:
+                return XMapEvent._new_from_cython_event_(  # pyright: ignore[reportPrivateUsage]
+                    map_event=cast(TYPES.EVENTS.Cython_XMapEvent, cython_instance)
+                )
+            elif self.type == XEvent.EVENT_TYPES.UnmapNotify:
+                return XUnmapEvent._new_from_cython_event_(  # pyright: ignore[reportPrivateUsage]
+                    unmap_event=cast(TYPES.EVENTS.Cython_XUnmapEvent, cython_instance)
+                )
+            elif self.type == XEvent.EVENT_TYPES.ConfigureNotify:
+                return XConfigureEvent._new_from_cython_event_(  # pyright: ignore[reportPrivateUsage]
+                    configure_event=cast(TYPES.EVENTS.Cython_XConfigureEvent, cython_instance)
                 )
             elif self.type == XEvent.EVENT_TYPES.PropertyNotify:
                 return XPropertyEvent._new_from_cython_event_(  # pyright: ignore[reportPrivateUsage]
@@ -1048,6 +1073,180 @@ class XDestroyWindowEvent(XEvent):
         return x_destroy_window_event
 
 
+class XMapEvent(XEvent):
+    """MapNotify (`XMapEvent`). `window` is the mapped client; `event` is who selected (parent or self)."""
+
+    def __init__(
+        self,
+        display: TYPES.Cython_Display,
+        event: TYPES.Cython_Window,
+        window: TYPES.Cython_Window,
+        override_redirect: bool,
+        serial: int = 0,
+        send_event: bool = False,
+        create_cython_event: bool = True,
+    ) -> None:
+        type_: XEvent.EVENT_TYPES = XEvent.EVENT_TYPES.MapNotify
+        if create_cython_event and type_.value.cython_class is not None:
+            cython_event: TYPES.EVENTS.Cython_XMapEvent = orcsome3_backend.PyXMapEvent._new_from_python_(
+                type=type_.value.id,
+                serial=serial,
+                send_event=send_event,
+                display=display,
+                event=event,
+                window=window,
+                override_redirect=override_redirect,
+            )
+            setattr(self, "_cython_event", cython_event)
+        self._set_attributes_(
+            type=type_,
+            serial=serial,
+            send_event=send_event,
+            display=display,
+            window=window,
+        )
+        self.event: TYPES.Cython_Window = event
+        self.override_redirect: bool = override_redirect
+
+    @classmethod
+    def _new_from_cython_event_(cls, map_event: TYPES.EVENTS.Cython_XMapEvent) -> XMapEvent:
+        x_map_event: XMapEvent = cls(
+            display=map_event.display,
+            event=TYPES.Cython_Window(map_event.event),
+            window=TYPES.Cython_Window(map_event.window),
+            override_redirect=bool(map_event.override_redirect),
+            serial=int(map_event.serial),
+            send_event=bool(map_event.send_event),
+            create_cython_event=False,
+        )
+        x_map_event._cython_event = map_event
+        return x_map_event
+
+
+class XUnmapEvent(XEvent):
+    """UnmapNotify (`XUnmapEvent`). `from_configure` is True when the unmap is due to a parent configure."""
+
+    def __init__(
+        self,
+        display: TYPES.Cython_Display,
+        event: TYPES.Cython_Window,
+        window: TYPES.Cython_Window,
+        from_configure: bool = False,
+        serial: int = 0,
+        send_event: bool = False,
+        create_cython_event: bool = True,
+    ) -> None:
+        type_: XEvent.EVENT_TYPES = XEvent.EVENT_TYPES.UnmapNotify
+        if create_cython_event and type_.value.cython_class is not None:
+            cython_event: TYPES.EVENTS.Cython_XUnmapEvent = orcsome3_backend.PyXUnmapEvent._new_from_python_(
+                type=type_.value.id,
+                serial=serial,
+                send_event=send_event,
+                display=display,
+                event=event,
+                window=window,
+                from_configure=from_configure,
+            )
+            setattr(self, "_cython_event", cython_event)
+        self._set_attributes_(
+            type=type_,
+            serial=serial,
+            send_event=send_event,
+            display=display,
+            window=window,
+        )
+        self.event: TYPES.Cython_Window = event
+        self.from_configure: bool = from_configure
+
+    @classmethod
+    def _new_from_cython_event_(cls, unmap_event: TYPES.EVENTS.Cython_XUnmapEvent) -> XUnmapEvent:
+        x_unmap_event: XUnmapEvent = cls(
+            display=unmap_event.display,
+            event=TYPES.Cython_Window(unmap_event.event),
+            window=TYPES.Cython_Window(unmap_event.window),
+            from_configure=bool(unmap_event.from_configure),
+            serial=int(unmap_event.serial),
+            send_event=bool(unmap_event.send_event),
+            create_cython_event=False,
+        )
+        x_unmap_event._cython_event = unmap_event
+        return x_unmap_event
+
+
+class XConfigureEvent(XEvent):
+    """ConfigureNotify (`XConfigureEvent`). `x`/`y` are relative to the parent; `above` is the stacking sibling."""
+
+    def __init__(
+        self,
+        display: TYPES.Cython_Display,
+        event: TYPES.Cython_Window,
+        window: TYPES.Cython_Window,
+        x: int = 0,
+        y: int = 0,
+        width: int = 0,
+        height: int = 0,
+        border_width: int = 0,
+        above: TYPES.Cython_Window = 0,
+        override_redirect: bool = False,
+        serial: int = 0,
+        send_event: bool = False,
+        create_cython_event: bool = True,
+    ) -> None:
+        type_: XEvent.EVENT_TYPES = XEvent.EVENT_TYPES.ConfigureNotify
+        if create_cython_event and type_.value.cython_class is not None:
+            cython_event: TYPES.EVENTS.Cython_XConfigureEvent = orcsome3_backend.PyXConfigureEvent._new_from_python_(
+                type=type_.value.id,
+                serial=serial,
+                send_event=send_event,
+                display=display,
+                event=event,
+                window=window,
+                x=x,
+                y=y,
+                width=width,
+                height=height,
+                border_width=border_width,
+                above=above,
+                override_redirect=override_redirect,
+            )
+            setattr(self, "_cython_event", cython_event)
+        self._set_attributes_(
+            type=type_,
+            serial=serial,
+            send_event=send_event,
+            display=display,
+            window=window,
+        )
+        self.event: TYPES.Cython_Window = event
+        self.x: int = x
+        self.y: int = y
+        self.width: int = width
+        self.height: int = height
+        self.border_width: int = border_width
+        self.above: TYPES.Cython_Window = above
+        self.override_redirect: bool = override_redirect
+
+    @classmethod
+    def _new_from_cython_event_(cls, configure_event: TYPES.EVENTS.Cython_XConfigureEvent) -> XConfigureEvent:
+        x_configure_event: XConfigureEvent = cls(
+            display=configure_event.display,
+            event=TYPES.Cython_Window(configure_event.event),
+            window=TYPES.Cython_Window(configure_event.window),
+            x=int(configure_event.x),
+            y=int(configure_event.y),
+            width=int(configure_event.width),
+            height=int(configure_event.height),
+            border_width=int(configure_event.border_width),
+            above=TYPES.Cython_Window(configure_event.above),
+            override_redirect=bool(configure_event.override_redirect),
+            serial=int(configure_event.serial),
+            send_event=bool(configure_event.send_event),
+            create_cython_event=False,
+        )
+        x_configure_event._cython_event = configure_event
+        return x_configure_event
+
+
 class XPropertyEvent(XEvent):
     """PropertyNotify (`XPropertyEvent`)."""
 
@@ -1402,6 +1601,45 @@ def get_connection_number(display: TYPES.Cython_Display) -> int:
     return int(orcsome3_backend.PyXConnectionNumber(display=display))
 
 
+def x_create_window(
+    display: TYPES.Cython_Display,
+    parent: TYPES.Cython_Window,
+    width: int = 32,
+    height: int = 32,
+) -> TYPES.Cython_Window:
+    """InputOnly override-redirect window at (0, 0). Wrapper for `XCreateWindow`."""
+    return TYPES.Cython_Window(
+        orcsome3_backend.PyXCreateOverrideRedirectWindow(display=display, parent=parent, width=width, height=height)
+    )
+
+
+def x_map_window(display: TYPES.Cython_Display, window: TYPES.Cython_Window) -> None:
+    """Wrapper for `XMapWindow`"""
+    _ = orcsome3_backend.PyXMapWindow(display=display, window=window)
+
+
+def x_destroy_window(display: TYPES.Cython_Display, window: TYPES.Cython_Window) -> None:
+    """Wrapper for `XDestroyWindow`"""
+    _ = orcsome3_backend.PyXDestroyWindow(display=display, window=window)
+
+
+def x_set_input_focus(
+    display: TYPES.Cython_Display,
+    window: TYPES.Cython_Window,
+    revert_to: int = CONSTANTS.REVERT_TO_POINTER_ROOT,
+) -> None:
+    """Wrapper for `XSetInputFocus`"""
+    _ = orcsome3_backend.PyXSetInputFocus(display=display, window=window, revert_to=revert_to)
+
+
+def x_get_input_focus(display: TYPES.Cython_Display) -> tuple[TYPES.Cython_Window, int]:
+    """Wrapper for `XGetInputFocus`. Returns `(focus_window, revert_to)`."""
+    window: int
+    revert_to: int
+    window, revert_to = orcsome3_backend.PyXGetInputFocus(display=display)
+    return TYPES.Cython_Window(window), revert_to
+
+
 def x_grab_key(
     display: TYPES.Cython_Display,
     window: TYPES.Cython_Window,
@@ -1431,6 +1669,43 @@ def x_ungrab_key(
 ) -> None:
     """Wrapper for `XUngrabKey`"""
     _ = orcsome3_backend.PyXUngrabKey(display=display, keycode=keycode, modifiers=modifiers, window=window)
+
+
+def x_grab_button(
+    display: TYPES.Cython_Display,
+    window: TYPES.Cython_Window,
+    button: int,
+    modifiers: int,
+    owner_events: bool,
+    event_mask: int,
+    pointer_mode: GRAB_MODE,
+    keyboard_mode: GRAB_MODE,
+    confine_to: TYPES.Cython_Window = 0,
+    cursor: int = 0,
+) -> None:
+    """Wrapper for `XGrabButton`. `confine_to`/`cursor` of 0 is X `None`."""
+    _ = orcsome3_backend.PyXGrabButton(
+        display=display,
+        button=button,
+        modifiers=modifiers,
+        window=window,
+        owner_events=owner_events,
+        event_mask=event_mask,
+        pointer_mode=pointer_mode.value,
+        keyboard_mode=keyboard_mode.value,
+        confine_to=confine_to,
+        cursor=cursor,
+    )
+
+
+def x_ungrab_button(
+    display: TYPES.Cython_Display,
+    button: int,
+    modifiers: int,
+    window: TYPES.Cython_Window,
+) -> None:
+    """Wrapper for `XUngrabButton`"""
+    _ = orcsome3_backend.PyXUngrabButton(display=display, button=button, modifiers=modifiers, window=window)
 
 
 def x_select_input(
@@ -1618,6 +1893,29 @@ def x_flush(display: TYPES.Cython_Display) -> None:
     _ = orcsome3_backend.PyXFlush(display=display)
 
 
+def xtest_query_extension(display: TYPES.Cython_Display) -> bool:
+    """True if the XTEST extension is present. Wrapper for `XTestQueryExtension`."""
+    return bool(orcsome3_backend.PyXTestQueryExtension(display=display))
+
+
+def xtest_fake_key_event(display: TYPES.Cython_Display, keycode: int, press: bool, delay: int = 0) -> None:
+    """Wrapper for `XTestFakeKeyEvent`"""
+    _ = orcsome3_backend.PyXTestFakeKeyEvent(display=display, keycode=keycode, press=press, delay=delay)
+    x_flush(display=display)
+
+
+def xtest_fake_button_event(display: TYPES.Cython_Display, button: int, press: bool, delay: int = 0) -> None:
+    """Wrapper for `XTestFakeButtonEvent`"""
+    _ = orcsome3_backend.PyXTestFakeButtonEvent(display=display, button=button, press=press, delay=delay)
+    x_flush(display=display)
+
+
+def xtest_fake_motion_event(display: TYPES.Cython_Display, x: int, y: int, screen: int = -1, delay: int = 0) -> None:
+    """Wrapper for `XTestFakeMotionEvent`. `screen=-1` is the screen the pointer is on."""
+    _ = orcsome3_backend.PyXTestFakeMotionEvent(display=display, screen=screen, x=x, y=y, delay=delay)
+    x_flush(display=display)
+
+
 def x_get_atom_name(display: TYPES.Cython_Display, atom: TYPES.Cython_Atom) -> Optional[str]:
     """
     Returns the name associated with an Atom if the Atom exists.
@@ -1696,6 +1994,9 @@ def x_next_event(
     XFocusChangeEvent,
     XCreateWindowEvent,
     XDestroyWindowEvent,
+    XMapEvent,
+    XUnmapEvent,
+    XConfigureEvent,
     XPropertyEvent,
     XClientMessageEvent,
 ]:
@@ -1716,6 +2017,14 @@ def x_next_event(
     if isinstance(cython_xevent, orcsome3_backend.PyXDestroyWindowEvent):
         return XDestroyWindowEvent._new_from_cython_event_(  # pyright: ignore[reportPrivateUsage]
             destroy_window_event=cython_xevent
+        )
+    if isinstance(cython_xevent, orcsome3_backend.PyXMapEvent):
+        return XMapEvent._new_from_cython_event_(map_event=cython_xevent)  # pyright: ignore[reportPrivateUsage]
+    if isinstance(cython_xevent, orcsome3_backend.PyXUnmapEvent):
+        return XUnmapEvent._new_from_cython_event_(unmap_event=cython_xevent)  # pyright: ignore[reportPrivateUsage]
+    if isinstance(cython_xevent, orcsome3_backend.PyXConfigureEvent):
+        return XConfigureEvent._new_from_cython_event_(  # pyright: ignore[reportPrivateUsage]
+            configure_event=cython_xevent
         )
     if isinstance(cython_xevent, orcsome3_backend.PyXPropertyEvent):
         return XPropertyEvent._new_from_cython_event_(property_event=cython_xevent)  # pyright: ignore[reportPrivateUsage]

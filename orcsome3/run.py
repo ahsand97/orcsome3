@@ -1,6 +1,6 @@
 """CLI entrypoint and the process-wide WindowManager singleton.
 
-`get_wm()` is the public way to reach the running manager from `rc.py`.
+`get_wm()` is the public way to reach the running manager from your config (`config.py`).
 `run()` parses argv, loads the config, and starts the libev loop.
 """
 
@@ -46,7 +46,7 @@ class _Orcsome3(SingletonMixin):
 
     @property
     def config_file(self) -> Path:
-        """Resolved path of the loaded `rc.py`."""
+        """Resolved path of the loaded config file."""
         return cast(Path, self._config_file)
 
     @property
@@ -88,7 +88,7 @@ class _Orcsome3(SingletonMixin):
         self._signal_watchers.append(watcher)
 
     def _start_rc_watcher(self) -> None:
-        """Watch `rc.py` via `ev_stat` (inotify, with a libev `stat` fallback)."""
+        """Watch the config file via `ev_stat` (inotify, with a libev `stat` fallback)."""
         self._rc_watcher = StatWatcher.new(callback=self._on_rc_stat, path=str(self.config_file), interval=0.0)
         self._rc_watcher.start(loop=self.loop)
         self._rc_debounce = TimerWatcher.new(callback=self._on_rc_debounce, after=_RC_DEBOUNCE_SECONDS, repeat=0.0)
@@ -103,7 +103,7 @@ class _Orcsome3(SingletonMixin):
         self.restart()
 
     def restart(self) -> None:
-        """Reload `rc.py` and re-init the window manager without exiting the process."""
+        """Reload the config and re-init the window manager without exiting the process."""
         if self._restarting:
             return
         self._restarting = True
@@ -115,7 +115,7 @@ class _Orcsome3(SingletonMixin):
             if loaded:
                 _logger.info(msg="Restarted successfully")
             else:
-                _logger.error(msg="Reload failed; running with no rc.py handlers")
+                _logger.error(msg="Reload failed; running with no config handlers")
         finally:
             self._restarting = False
 
@@ -143,7 +143,7 @@ class _Orcsome3(SingletonMixin):
             self._loop = None
 
     def load_config(self, *, fatal: bool = True) -> bool:
-        """Exec `rc.py` with `__file__` / `__name__` set. Initial load exits on error; reload does not."""
+        """Exec the config file with `__file__` / `__name__` set. Initial load exits on error; reload does not."""
         config_dir: str = str(self.config_file.parent)
         config_globals: dict[str, object] = {
             "__file__": str(self.config_file),
@@ -171,10 +171,20 @@ _orcsome3: _Orcsome3 = _Orcsome3()  # global _Orcsome3 single instance
 def get_wm() -> WindowManager:
     """Return the process-wide WindowManager.
 
-    Call this from `rc.py` (or any code running after `orcsome3` has started).
+    Call this from your config (or any code running after `orcsome3` has started).
     Constructing `WindowManager()` yourself returns the same singleton once `run()` has created it.
     """
     return _orcsome3.wm
+
+
+def _config_dir() -> Path:
+    """XDG config dir for orcsome3 (`$XDG_CONFIG_HOME/orcsome3` or `~/.config/orcsome3`)."""
+    return Path(os.getenv(key="XDG_CONFIG_HOME", default=str(Path("~/.config").expanduser()))).joinpath("orcsome3")
+
+
+def _default_config_file() -> Path:
+    """`~/.config/orcsome3/config.py` (or `$XDG_CONFIG_HOME/orcsome3/config.py`)."""
+    return _config_dir().joinpath("config.py")
 
 
 def run() -> None:
@@ -189,10 +199,8 @@ def run() -> None:
     _ = parser.add_argument(
         "-c",
         "--config",
-        default=Path(os.getenv(key="XDG_CONFIG_HOME", default=str(Path("~/.config").expanduser()))).joinpath(
-            "orcsome3", "rc.py"
-        ),
-        help="Path to config file",
+        default=_default_config_file(),
+        help="Path to config file (default: ~/.config/orcsome3/config.py)",
         type=Path,
         required=False,
     )

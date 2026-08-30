@@ -7,7 +7,7 @@ export LANG := C.UTF-8
 export LC_ALL := C.UTF-8
 export LANGUAGE := C
 
-.PHONY: help format lint stubs install install-dev uninstall build native native-rebuild native-fast clean dev run
+.PHONY: help format lint stubs install install-dev uninstall build native native-rebuild native-fast clean dev run test
 
 help:
 	@echo "format          ruff format + isort"
@@ -15,6 +15,7 @@ help:
 	@echo "stubs           regenerate orcsome3_backend.pyi from the Cython backend"
 	@echo "dev             venv + deps + native backend (does not pip-install orcsome3)"
 	@echo "run             python -m orcsome3 from this tree (needs: make dev)"
+	@echo "test            unittest (X tests skip if DISPLAY cannot be opened)"
 	@echo "install         pip install ."
 	@echo "install-dev     pip install -e '.[dev]'"
 	@echo "uninstall       pip uninstall orcsome3"
@@ -38,6 +39,9 @@ lint:
 	$(PYTHON) tools/check_named_args.py
 	$(PYTHON) tools/check_explicit_types.py
 	$(PYTHON) tools/generate_backend_stub.py --check
+
+test:
+	$(PYTHON) -m unittest discover -s tests -v
 
 dev:
 	@test -x "$(VENV)" || python3 -m venv "$(CURDIR)/venv"

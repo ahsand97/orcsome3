@@ -1,6 +1,6 @@
 """Orcsome3: Python 3 scripting for NETWM-compliant X11 window managers.
 
-Typical rc.py usage::
+Typical config.py usage::
 
     from orcsome3 import get_wm
 

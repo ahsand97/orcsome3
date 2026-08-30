@@ -541,6 +541,7 @@ def build_core_libraries(
     Core libraries:
     - `X11` (shared using pkg-config `x11`): (Also known as libX11) X Window System Protocol client library.
     - `Xss` (shared using pkg-config `xscrnsaver`): X Screen Saver extension client library.
+    - `Xtst` (shared using pkg-config `xtst`): XTEST extension (synthetic key/button events).
     - `libgd`: https://github.com/libgd/libgd.git. Depends on `zlib` and `libpng`.
     - `MagickWand`: https://github.com/ImageMagick/ImageMagick.git. ImageMagick C library, depends on `djvulibre`, `jbig`, `libjpeg`, `liblzma`,
         `Imath`, `openexr`, `openjpeg` (`libopenjp2`), `libpng`, `libraw`, `libwebp`, `libtiff`, `zlib` and `zstd`.
@@ -779,6 +780,9 @@ def build_core_libraries(
     )
     core_libraries["xext"] = Library(
         name="xext", compiler_args=get_compiler_args(libraries=[PkgConfigInfo(name=["xext"])])
+    )
+    core_libraries["xtst"] = Library(
+        name="xtst", compiler_args=get_compiler_args(libraries=[PkgConfigInfo(name=["xtst"])])
     )
     core_libraries["libgd"] = build_libgd(
         build_dependencies={x: base_libraries[x] for x in base_libraries if x in ("zlib", "libpng")} if static else {}

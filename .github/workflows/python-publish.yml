@@ -1,18 +1,72 @@
-# Publish sdist + manylinux wheels to PyPI when a GitHub Release is published.
-# https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python#publishing-to-package-registries
+# sdist + manylinux wheels → PyPI on a GitHub Release or Actions → Run workflow.
+# `uses:` cannot take ${{ matrix.* }}; pin each cibuildwheel version on its own job.
 
 name: Upload Python Package
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+env:
+  CIBW_SKIP: "*-musllinux_* *t-*"
+  CIBW_BEFORE_BUILD: "pip install 'Cython>=3.0'"
+  CIBW_ENVIRONMENT: "ORCSOME3_BUILD_JOBS=2"
+  CIBW_TEST_SKIP: "*"
+
 jobs:
-  build_wheels:
-    uses: ./.github/workflows/build-wheels.yml
+  wheels-cp39-plus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git cmake autoconf automake libtool pkg-config meson ninja-build \
+            libx11-dev libxss-dev libxext-dev libxtst-dev curl
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: pypa/cibuildwheel@v4.2.0
+        env:
+          CIBW_BUILD: "cp3[9]* cp31*"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-v4.2.0
+          path: wheelhouse/*.whl
+
+  wheels-cp38:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git cmake autoconf automake libtool pkg-config meson ninja-build \
+            libx11-dev libxss-dev libxext-dev libxtst-dev curl
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: pypa/cibuildwheel@v3.4.1
+        env:
+          CIBW_BUILD: "cp38-*"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-v3.4.1
+          path: wheelhouse/*.whl
 
   build_sdist:
     runs-on: ubuntu-latest
@@ -38,7 +92,8 @@ jobs:
 
   pypi-publish:
     needs:
-      - build_wheels
+      - wheels-cp39-plus
+      - wheels-cp38
       - build_sdist
     runs-on: ubuntu-latest
     permissions:

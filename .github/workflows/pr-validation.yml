@@ -44,7 +44,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install -U pip
-          python -m pip install dbus-next typing_extensions "Cython>=3.0" mypy basedpyright ruff
+          python -m pip install dbus-next typing_extensions "Cython>=3.0" mypy basedpyright ruff types-setuptools
 
       - name: Check code formatting
         id: formatting

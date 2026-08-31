@@ -24,7 +24,7 @@ dependencies = ["dbus-next", "typing_extensions"]
 dynamic = ["version", "readme"]
 
 [project.optional-dependencies]
-dev = ["mypy", "basedpyright", "ruff"]
+dev = ["mypy", "basedpyright", "ruff", "types-setuptools"]
 
 [project.scripts]
 orcsome3 = "orcsome3.run:run"

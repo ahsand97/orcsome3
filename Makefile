@@ -43,7 +43,7 @@ stubs-check:
 lint:
 	$(PYTHON) -m ruff check .
 	$(PYTHON) -m mypy orcsome3 tools tests
-	$(PYTHON) -m basedpyright --pythonpath $(PYTHON) orcsome3 setup.py orcsome3_backend.pyi tools tests
+	$(PYTHON) -m basedpyright orcsome3 setup.py orcsome3_backend.pyi tools tests
 	$(PYTHON) tools/check_named_args.py
 	$(PYTHON) tools/check_explicit_types.py
 

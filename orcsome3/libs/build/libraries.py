@@ -222,7 +222,9 @@ def build_base_libraries(build_directory: Path, skip_build_external_libs: bool) 
                     git_clone_command,
                     f"cd '{str(lib_base_folder)}'",
                     f"git switch --detach {LIBRARIES_SOURCES_VERSION[lib_name][1]}",
-                    make_build_cmd(),
+                    # Only the "lib" target (libjbig.a); "pbm" builds jbigkit's CLI tools (unneeded here)
+                    # and their man pages need groff, which isn't a build dependency of this project.
+                    f"{make_build_cmd()} lib",
                 ]
             )
             run_command_and_show_output(command=f"printf '\\n' && {commands}", cwd=build_directory)

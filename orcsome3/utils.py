@@ -70,14 +70,10 @@ def match_string(pattern: str, string: str) -> bool:
 def rmdir(*directories: Path) -> None:
     """Delete a file or a directory if it exists"""
     for directory in directories:
-        if not (directory.is_file() or directory.is_dir()):
-            continue
-        if directory.is_file():
+        if directory.is_symlink() or directory.is_file():
             directory.unlink()
         elif directory.is_dir():
-            for item in directory.rglob(pattern="*"):
-                rmdir(item) if item.is_dir() else item.unlink()
-            directory.rmdir()
+            shutil.rmtree(path=directory)
 
 
 def run_command_and_show_output(command: str, cwd: Optional[Path] = None) -> None:

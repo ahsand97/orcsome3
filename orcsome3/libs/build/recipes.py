@@ -113,13 +113,14 @@ CMAKE_GIT_RECIPES: dict[str, CMakeGitRecipe] = {
     ),
     "libjpeg": _recipe(
         name="libjpeg",
-        lib_subdir="lib64",
-        pkg_config_subpath=("lib64", "pkgconfig"),
         artifacts=["libjpeg.a"],
         cmake_flags=[
             "-DENABLE_SHARED=FALSE",
             "-DENABLE_STATIC=TRUE",
             "-DWITH_TURBOJPEG=OFF",
+            # libjpeg-turbo's GNUInstallDirs picks lib64 vs lib based on the distro (e.g. Fedora vs
+            # Debian/Ubuntu); force plain "lib" to match lib_subdir/pkg_config_subpath's default.
+            "-DCMAKE_INSTALL_LIBDIR=lib",
         ],
         cmake_dirs=["cmake/libjpeg-turbo"],
     ),

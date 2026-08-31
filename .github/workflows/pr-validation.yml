@@ -44,11 +44,15 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install -U pip
-          python -m pip install dbus-next typing_extensions "Cython>=3.0" mypy basedpyright ruff types-setuptools
+          python -m pip install dbus-next typing_extensions "Cython>=3.0" mypy basedpyright ruff setuptools types-setuptools
 
       - name: Check code formatting
         id: formatting
         run: make format-check
+
+      - name: Lint
+        id: lint
+        run: make lint
 
       - name: Install native build dependencies
         run: |
@@ -60,7 +64,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Cache native libraries
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/orcsome3/libs
@@ -76,10 +80,6 @@ jobs:
           else
             make native
           fi
-
-      - name: Lint
-        id: lint
-        run: make lint
 
       - name: Validate backend stub
         id: stubs

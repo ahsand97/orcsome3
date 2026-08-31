@@ -52,7 +52,7 @@ test:
 
 dev:
 	@test -x "$(VENV)" || python3 -m venv "$(CURDIR)/venv"
-	$(VENV) -m pip install -q dbus-next typing_extensions "Cython>=3.0" mypy basedpyright ruff types-setuptools
+	$(VENV) -m pip install -q dbus-next typing_extensions "Cython>=3.0" mypy basedpyright ruff setuptools types-setuptools
 	@if [ -d orcsome3_built_libraries ]; then \
 		$(MAKE) native-fast PYTHON="$(VENV)"; \
 	else \

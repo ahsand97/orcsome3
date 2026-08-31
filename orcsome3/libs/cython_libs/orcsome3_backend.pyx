@@ -50,6 +50,251 @@ cdef void release_icon_data(IconData *icon_data):
     icon_data.length = 0
     icon_data.magick_memory = False
 
+
+# Enums
+
+class CONSTANTS(pyenum.IntEnum):
+    CurrentTime = xlib.CurrentTime
+    AnyPropertyType = xlib.AnyPropertyType
+    NoSymbol = xlib.NoSymbol
+    AnyKey = xlib.AnyKey
+    XkbUseCoreKbd = xlib.XkbUseCoreKbd
+    RevertToNone = xlib.RevertToNone
+    RevertToPointerRoot = xlib.RevertToPointerRoot
+    RevertToParent = xlib.RevertToParent
+
+class EVENT_TYPES(pyenum.IntEnum):
+    # Generic event
+    GenericEvent = xlib.GenericEvent
+    # XErrorEvent
+    ErrorEvent = 0
+    # XKeyEvent
+    KeyPress = xlib.KeyPress
+    KeyRelease = xlib.KeyRelease
+    # XButtonEvent
+    ButtonPress = xlib.ButtonPress
+    ButtonRelease = xlib.ButtonRelease
+    # XMotionEvent
+    MotionNotify = xlib.MotionNotify
+    # XCrossingEvent
+    EnterNotify = xlib.EnterNotify
+    LeaveNotify = xlib.LeaveNotify
+    # XFocusChangeEvent
+    FocusIn = xlib.FocusIn
+    FocusOut = xlib.FocusOut
+    # XExposeEvent
+    Expose = xlib.Expose
+    # XGraphicsExposeEvent
+    GraphicsExpose = xlib.GraphicsExpose
+    # XNoExposeEvent
+    NoExpose = xlib.NoExpose
+    # XVisibilityEvent
+    VisibilityNotify = xlib.VisibilityNotify
+    # XCreateWindowEvent
+    CreateNotify = xlib.CreateNotify
+    # XDestroyWindowEvent
+    DestroyNotify = xlib.DestroyNotify
+    # XUnmapEvent
+    UnmapNotify = xlib.UnmapNotify
+    # XMapEvent
+    MapNotify = xlib.MapNotify
+    # XMapRequestEvent
+    MapRequest = xlib.MapRequest
+    # XReparentEvent
+    ReparentNotify = xlib.ReparentNotify
+    # XConfigureEvent
+    ConfigureNotify = xlib.ConfigureNotify
+    # XGravityEvent
+    GravityNotify = xlib.GravityNotify
+    # XResizeRequestEvent
+    ResizeRequest = xlib.ResizeRequest
+    # XConfigureRequestEvent
+    ConfigureRequest = xlib.ConfigureRequest
+    # XCirculateEvent
+    CirculateNotify = xlib.CirculateNotify
+    # XCirculateRequestEvent
+    CirculateRequest = xlib.CirculateRequest
+    # XPropertyEvent
+    PropertyNotify = xlib.PropertyNotify
+    # XSelectionClearEvent
+    SelectionClear = xlib.SelectionClear
+    # XSelectionRequestEvent
+    SelectionRequest = xlib.SelectionRequest
+    # XSelectionEvent
+    SelectionNotify = xlib.SelectionNotify
+    # XColormapEvent
+    ColormapNotify = xlib.ColormapNotify
+    # XClientMessageEvent
+    ClientMessage = xlib.ClientMessage
+    # XMappingEvent
+    MappingNotify = xlib.MappingNotify
+    # XKeymapEvent
+    KeymapNotify = xlib.KeymapNotify
+
+class INPUT_EVENT_MASKS(pyenum.IntEnum):
+    NoEventMask = xlib.NoEventMask
+    StructureNotifyMask = xlib.StructureNotifyMask
+    SubstructureNotifyMask = xlib.SubstructureNotifyMask
+    SubstructureRedirectMask = xlib.SubstructureRedirectMask
+    PropertyChangeMask = xlib.PropertyChangeMask
+    FocusChangeMask = xlib.FocusChangeMask
+    KeyPressMask = xlib.KeyPressMask
+    KeyReleaseMask = xlib.KeyReleaseMask
+    ButtonPressMask = xlib.ButtonPressMask
+    ButtonReleaseMask = xlib.ButtonReleaseMask
+
+class KEY_MASKS(pyenum.IntEnum):
+    AnyModifier = xlib.AnyModifier
+    Mod1Mask = xlib.Mod1Mask
+    ControlMask = xlib.ControlMask
+    ShiftMask = xlib.ShiftMask
+    Mod2Mask = xlib.Mod2Mask
+    Mod4Mask = xlib.Mod4Mask
+    LockMask = xlib.LockMask
+
+class BUTTON_MASKS(pyenum.IntEnum):
+    AnyModifier = xlib.AnyModifier
+    Button1Mask = xlib.Button1Mask
+    Button2Mask = xlib.Button2Mask
+    Button3Mask = xlib.Button3Mask
+    Button4Mask = xlib.Button4Mask
+    Button5Mask = xlib.Button5Mask
+
+class BUTTONS(pyenum.IntEnum):
+    AnyButton = xlib.AnyButton
+    Button1 = xlib.Button1
+    Button2 = xlib.Button2
+    Button3 = xlib.Button3
+    Button4 = xlib.Button4
+    Button5 = xlib.Button5
+
+class GRAB_MODE(pyenum.IntEnum):
+    GrabModeSync = xlib.GrabModeSync
+    GrabModeAsync = xlib.GrabModeAsync
+
+class WINDOW_VALUE_MASK(pyenum.IntEnum):
+    CWX = xlib.CWX
+    CWY = xlib.CWY
+    CWWidth = xlib.CWWidth
+    CWHeight = xlib.CWHeight
+    CWBorderWidth = xlib.CWBorderWidth
+    CWSibling = xlib.CWSibling
+    CWStackMode = xlib.CWStackMode
+
+class WINDOW_STACKING_METHOD(pyenum.IntEnum):
+    Above = xlib.Above
+    Below = xlib.Below
+    TopIf = xlib.TopIf
+    BottomIf = xlib.BottomIf
+    Opposite = xlib.Opposite
+
+class SET_PROPERTY_MODE(pyenum.IntEnum):
+    PropModeReplace = xlib.PropModeReplace
+    PropModePrepend = xlib.PropModePrepend
+    PropModeAppend = xlib.PropModeAppend
+
+class WINDOW_MAP_STATE(pyenum.IntEnum):
+    IsUnmapped = xlib.IsUnmapped
+    IsUnviewable = xlib.IsUnviewable
+    IsViewable = xlib.IsViewable
+
+class SCREENSAVER_STATE(pyenum.IntEnum):
+    ScreenSaverOff = xlib.ScreenSaverOff
+    ScreenSaverOn = xlib.ScreenSaverOn
+    ScreenSaverCycle = xlib.ScreenSaverCycle
+    ScreenSaverDisabled = xlib.ScreenSaverDisabled
+
+class SCREENSAVER_KIND(pyenum.IntEnum):
+    ScreenSaverBlanked = xlib.ScreenSaverBlanked
+    ScreenSaverInternal = xlib.ScreenSaverInternal
+    ScreenSaverExternal = xlib.ScreenSaverExternal
+
+class KB_GROUP_INDEX(pyenum.IntEnum):
+    XkbGroup1Index = xlib.XkbGroup1Index
+    XkbGroup2Index = xlib.XkbGroup2Index
+    XkbGroup3Index = xlib.XkbGroup3Index
+    XkbGroup4Index = xlib.XkbGroup4Index
+    XkbAnyGroup = xlib.XkbAnyGroup
+    XkbAllGroups = xlib.XkbAllGroups
+
+class NOTIFY_MODES(pyenum.IntEnum):
+    NotifyNormal = xlib.NotifyNormal
+    NotifyGrab = xlib.NotifyGrab
+    NotifyUngrab = xlib.NotifyUngrab
+    NotifyWhileGrabbed = xlib.NotifyWhileGrabbed
+
+class NOTIFY_DETAILS(pyenum.IntEnum):
+    NotifyAncestor = xlib.NotifyAncestor
+    NotifyVirtual = xlib.NotifyVirtual
+    NotifyInferior = xlib.NotifyInferior
+    NotifyNonlinear = xlib.NotifyNonlinear
+    NotifyNonlinearVirtual = xlib.NotifyNonlinearVirtual
+    NotifyPointer = xlib.NotifyPointer
+    NotifyPointerRoot = xlib.NotifyPointerRoot
+    NotifyDetailNone = xlib.NotifyDetailNone
+
+class PROPERTY_NOTIFICATION(pyenum.IntEnum):
+    PropertyNewValue = xlib.PropertyNewValue
+    PropertyDelete = xlib.PropertyDelete
+
+class PROPERTY_FORMAT(pyenum.Enum):
+    """
+    Enum representing the valid formats when getting/setting a property.
+
+    - CHAR: Format with value 8. The value of the property is a char array
+    - SHORT: Format with value 16. The value of the property is a short array
+    - LONG: Format with value 32. The value of the property is a long array
+    """
+
+    CHAR = (8, "b")
+    SHORT = (16, "h")
+    LONG = (32, "l")
+
+    @classmethod
+    def new_from_value(cls, value: Union[str, int]) -> "PROPERTY_FORMAT":
+        for member in cls:
+            if value in member.value:
+                return member
+        raise ValueError(f"The value {value} is not in the enum members")
+
+class DPMS_POWER_LEVEL(pyenum.IntEnum):
+    DPMSModeOn = xlib.DPMSModeOn
+    DPMSModeStandby = xlib.DPMSModeStandby
+    DPMSModeSuspend = xlib.DPMSModeSuspend
+    DPMSModeOff = xlib.DPMSModeOff
+
+class PYLOOP_NEW_LOOP_FLAGS(pyenum.IntEnum):
+    EVFLAG_AUTO = libev.EVFLAG_AUTO
+    EVFLAG_NOENV = libev.EVFLAG_NOENV
+    EVFLAG_FORKCHECK = libev.EVFLAG_FORKCHECK
+    EVFLAG_NOINOTIFY = libev.EVFLAG_NOINOTIFY
+    EVFLAG_SIGNALFD = libev.EVFLAG_SIGNALFD
+    EVFLAG_NOSIGMASK = libev.EVFLAG_NOSIGMASK
+    EVBACKEND_SELECT = libev.EVBACKEND_SELECT
+    EVBACKEND_POLL = libev.EVBACKEND_POLL
+    EVBACKEND_EPOLL = libev.EVBACKEND_EPOLL
+    EVBACKEND_KQUEUE = libev.EVBACKEND_KQUEUE
+    EVBACKEND_DEVPOLL = libev.EVBACKEND_DEVPOLL
+    EVBACKEND_PORT = libev.EVBACKEND_PORT
+    EVBACKEND_ALL = libev.EVBACKEND_ALL
+    EVBACKEND_MASK = libev.EVBACKEND_MASK
+
+class PYLOOP_RUN_LOOP_FLAGS(pyenum.IntEnum):
+    EVRUN_ALWAYS = 0  # Keep handling events until either no event watchers are active anymore or "ev_break" was called
+    EVRUN_ONCE = libev.EVRUN_ONCE
+    EVRUN_NOWAIT = libev.EVRUN_NOWAIT
+
+class PYLOOP_BREAK_LOOP_FLAGS(pyenum.IntEnum):
+    EVBREAK_ALL = libev.EVBREAK_ALL
+    EVBREAK_ONE = libev.EVBREAK_ONE
+    EVBREAK_CANCEL = libev.EVBREAK_CANCEL
+
+class PYIOWATCHER_INIT_FLAGS(pyenum.IntEnum):
+    EV_READ = libev.EV_READ
+    EV_WRITE = libev.EV_WRITE
+    EV_READ_WRITE = libev.EV_READ | libev.EV_WRITE
+
+
 cdef class PyDisplay:
     cdef xlib.Display *_display
 
@@ -1166,250 +1411,6 @@ cdef class PyStatWatcher:
                 PyStatWatcher._new_(stat_watcher=stat_watcher, callbacks=callbacks_dict),
                 revents
             )
-
-
-# Enums
-
-class CONSTANTS(pyenum.IntEnum):
-    CurrentTime = xlib.CurrentTime
-    AnyPropertyType = xlib.AnyPropertyType
-    NoSymbol = xlib.NoSymbol
-    AnyKey = xlib.AnyKey
-    XkbUseCoreKbd = xlib.XkbUseCoreKbd
-    RevertToNone = xlib.RevertToNone
-    RevertToPointerRoot = xlib.RevertToPointerRoot
-    RevertToParent = xlib.RevertToParent
-
-class EVENT_TYPES(pyenum.IntEnum):
-    # Generic event
-    GenericEvent = xlib.GenericEvent
-    # XErrorEvent
-    ErrorEvent = 0
-    # XKeyEvent
-    KeyPress = xlib.KeyPress
-    KeyRelease = xlib.KeyRelease
-    # XButtonEvent
-    ButtonPress = xlib.ButtonPress
-    ButtonRelease = xlib.ButtonRelease
-    # XMotionEvent
-    MotionNotify = xlib.MotionNotify
-    # XCrossingEvent
-    EnterNotify = xlib.EnterNotify
-    LeaveNotify = xlib.LeaveNotify
-    # XFocusChangeEvent
-    FocusIn = xlib.FocusIn
-    FocusOut = xlib.FocusOut
-    # XExposeEvent
-    Expose = xlib.Expose
-    # XGraphicsExposeEvent
-    GraphicsExpose = xlib.GraphicsExpose
-    # XNoExposeEvent
-    NoExpose = xlib.NoExpose
-    # XVisibilityEvent
-    VisibilityNotify = xlib.VisibilityNotify
-    # XCreateWindowEvent
-    CreateNotify = xlib.CreateNotify
-    # XDestroyWindowEvent
-    DestroyNotify = xlib.DestroyNotify
-    # XUnmapEvent
-    UnmapNotify = xlib.UnmapNotify
-    # XMapEvent
-    MapNotify = xlib.MapNotify
-    # XMapRequestEvent
-    MapRequest = xlib.MapRequest
-    # XReparentEvent
-    ReparentNotify = xlib.ReparentNotify
-    # XConfigureEvent
-    ConfigureNotify = xlib.ConfigureNotify
-    # XGravityEvent
-    GravityNotify = xlib.GravityNotify
-    # XResizeRequestEvent
-    ResizeRequest = xlib.ResizeRequest
-    # XConfigureRequestEvent
-    ConfigureRequest = xlib.ConfigureRequest
-    # XCirculateEvent
-    CirculateNotify = xlib.CirculateNotify
-    # XCirculateRequestEvent
-    CirculateRequest = xlib.CirculateRequest
-    # XPropertyEvent
-    PropertyNotify = xlib.PropertyNotify
-    # XSelectionClearEvent
-    SelectionClear = xlib.SelectionClear
-    # XSelectionRequestEvent
-    SelectionRequest = xlib.SelectionRequest
-    # XSelectionEvent
-    SelectionNotify = xlib.SelectionNotify
-    # XColormapEvent
-    ColormapNotify = xlib.ColormapNotify
-    # XClientMessageEvent
-    ClientMessage = xlib.ClientMessage
-    # XMappingEvent
-    MappingNotify = xlib.MappingNotify
-    # XKeymapEvent
-    KeymapNotify = xlib.KeymapNotify
-
-class INPUT_EVENT_MASKS(pyenum.IntEnum):
-    NoEventMask = xlib.NoEventMask
-    StructureNotifyMask = xlib.StructureNotifyMask
-    SubstructureNotifyMask = xlib.SubstructureNotifyMask
-    SubstructureRedirectMask = xlib.SubstructureRedirectMask
-    PropertyChangeMask = xlib.PropertyChangeMask
-    FocusChangeMask = xlib.FocusChangeMask
-    KeyPressMask = xlib.KeyPressMask
-    KeyReleaseMask = xlib.KeyReleaseMask
-    ButtonPressMask = xlib.ButtonPressMask
-    ButtonReleaseMask = xlib.ButtonReleaseMask
-
-class KEY_MASKS(pyenum.IntEnum):
-    AnyModifier = xlib.AnyModifier
-    Mod1Mask = xlib.Mod1Mask
-    ControlMask = xlib.ControlMask
-    ShiftMask = xlib.ShiftMask
-    Mod2Mask = xlib.Mod2Mask
-    Mod4Mask = xlib.Mod4Mask
-    LockMask = xlib.LockMask
-
-class BUTTON_MASKS(pyenum.IntEnum):
-    AnyModifier = xlib.AnyModifier
-    Button1Mask = xlib.Button1Mask
-    Button2Mask = xlib.Button2Mask
-    Button3Mask = xlib.Button3Mask
-    Button4Mask = xlib.Button4Mask
-    Button5Mask = xlib.Button5Mask
-
-class BUTTONS(pyenum.IntEnum):
-    AnyButton = xlib.AnyButton
-    Button1 = xlib.Button1
-    Button2 = xlib.Button2
-    Button3 = xlib.Button3
-    Button4 = xlib.Button4
-    Button5 = xlib.Button5
-
-class GRAB_MODE(pyenum.IntEnum):
-    GrabModeSync = xlib.GrabModeSync
-    GrabModeAsync = xlib.GrabModeAsync
-
-class WINDOW_VALUE_MASK(pyenum.IntEnum):
-    CWX = xlib.CWX
-    CWY = xlib.CWY
-    CWWidth = xlib.CWWidth
-    CWHeight = xlib.CWHeight
-    CWBorderWidth = xlib.CWBorderWidth
-    CWSibling = xlib.CWSibling
-    CWStackMode = xlib.CWStackMode
-
-class WINDOW_STACKING_METHOD(pyenum.IntEnum):
-    Above = xlib.Above
-    Below = xlib.Below
-    TopIf = xlib.TopIf
-    BottomIf = xlib.BottomIf
-    Opposite = xlib.Opposite
-
-class SET_PROPERTY_MODE(pyenum.IntEnum):
-    PropModeReplace = xlib.PropModeReplace
-    PropModePrepend = xlib.PropModePrepend
-    PropModeAppend = xlib.PropModeAppend
-
-class WINDOW_MAP_STATE(pyenum.IntEnum):
-    IsUnmapped = xlib.IsUnmapped
-    IsUnviewable = xlib.IsUnviewable
-    IsViewable = xlib.IsViewable
-
-class SCREENSAVER_STATE(pyenum.IntEnum):
-    ScreenSaverOff = xlib.ScreenSaverOff
-    ScreenSaverOn = xlib.ScreenSaverOn
-    ScreenSaverCycle = xlib.ScreenSaverCycle
-    ScreenSaverDisabled = xlib.ScreenSaverDisabled
-
-class SCREENSAVER_KIND(pyenum.IntEnum):
-    ScreenSaverBlanked = xlib.ScreenSaverBlanked
-    ScreenSaverInternal = xlib.ScreenSaverInternal
-    ScreenSaverExternal = xlib.ScreenSaverExternal
-
-class KB_GROUP_INDEX(pyenum.IntEnum):
-    XkbGroup1Index = xlib.XkbGroup1Index
-    XkbGroup2Index = xlib.XkbGroup2Index
-    XkbGroup3Index = xlib.XkbGroup3Index
-    XkbGroup4Index = xlib.XkbGroup4Index
-    XkbAnyGroup = xlib.XkbAnyGroup
-    XkbAllGroups = xlib.XkbAllGroups
-
-class NOTIFY_MODES(pyenum.IntEnum):
-    NotifyNormal = xlib.NotifyNormal
-    NotifyGrab = xlib.NotifyGrab
-    NotifyUngrab = xlib.NotifyUngrab
-    NotifyWhileGrabbed = xlib.NotifyWhileGrabbed
-
-class NOTIFY_DETAILS(pyenum.IntEnum):
-    NotifyAncestor = xlib.NotifyAncestor
-    NotifyVirtual = xlib.NotifyVirtual
-    NotifyInferior = xlib.NotifyInferior
-    NotifyNonlinear = xlib.NotifyNonlinear
-    NotifyNonlinearVirtual = xlib.NotifyNonlinearVirtual
-    NotifyPointer = xlib.NotifyPointer
-    NotifyPointerRoot = xlib.NotifyPointerRoot
-    NotifyDetailNone = xlib.NotifyDetailNone
-
-class PROPERTY_NOTIFICATION(pyenum.IntEnum):
-    PropertyNewValue = xlib.PropertyNewValue
-    PropertyDelete = xlib.PropertyDelete
-
-class PROPERTY_FORMAT(pyenum.Enum):
-    """
-    Enum representing the valid formats when getting/setting a property.
-
-    - CHAR: Format with value 8. The value of the property is a char array
-    - SHORT: Format with value 16. The value of the property is a short array
-    - LONG: Format with value 32. The value of the property is a long array
-    """
-
-    CHAR = (8, "b")
-    SHORT = (16, "h")
-    LONG = (32, "l")
-
-    @classmethod
-    def new_from_value(cls, value: Union[str, int]) -> "PROPERTY_FORMAT":
-        for member in cls:
-            if value in member.value:
-                return member
-        raise ValueError(f"The value {value} is not in the enum members")
-
-class DPMS_POWER_LEVEL(pyenum.IntEnum):
-    DPMSModeOn = xlib.DPMSModeOn
-    DPMSModeStandby = xlib.DPMSModeStandby
-    DPMSModeSuspend = xlib.DPMSModeSuspend
-    DPMSModeOff = xlib.DPMSModeOff
-
-class PYLOOP_NEW_LOOP_FLAGS(pyenum.IntEnum):
-    EVFLAG_AUTO = libev.EVFLAG_AUTO
-    EVFLAG_NOENV = libev.EVFLAG_NOENV
-    EVFLAG_FORKCHECK = libev.EVFLAG_FORKCHECK
-    EVFLAG_NOINOTIFY = libev.EVFLAG_NOINOTIFY
-    EVFLAG_SIGNALFD = libev.EVFLAG_SIGNALFD
-    EVFLAG_NOSIGMASK = libev.EVFLAG_NOSIGMASK
-    EVBACKEND_SELECT = libev.EVBACKEND_SELECT
-    EVBACKEND_POLL = libev.EVBACKEND_POLL
-    EVBACKEND_EPOLL = libev.EVBACKEND_EPOLL
-    EVBACKEND_KQUEUE = libev.EVBACKEND_KQUEUE
-    EVBACKEND_DEVPOLL = libev.EVBACKEND_DEVPOLL
-    EVBACKEND_PORT = libev.EVBACKEND_PORT
-    EVBACKEND_ALL = libev.EVBACKEND_ALL
-    EVBACKEND_MASK = libev.EVBACKEND_MASK
-
-class PYLOOP_RUN_LOOP_FLAGS(pyenum.IntEnum):
-    EVRUN_ALWAYS = 0  # Keep handling events until either no event watchers are active anymore or "ev_break" was called
-    EVRUN_ONCE = libev.EVRUN_ONCE
-    EVRUN_NOWAIT = libev.EVRUN_NOWAIT
-
-class PYLOOP_BREAK_LOOP_FLAGS(pyenum.IntEnum):
-    EVBREAK_ALL = libev.EVBREAK_ALL
-    EVBREAK_ONE = libev.EVBREAK_ONE
-    EVBREAK_CANCEL = libev.EVBREAK_CANCEL
-
-class PYIOWATCHER_INIT_FLAGS(pyenum.IntEnum):
-    EV_READ = libev.EV_READ
-    EV_WRITE = libev.EV_WRITE
-    EV_READ_WRITE = libev.EV_READ | libev.EV_WRITE
 
 
 # Functions

@@ -81,6 +81,15 @@ jobs:
             make native
           fi
 
+      # Relays the built static libs to python-publish.yml's wheel jobs (same workflow run) so they
+      # don't need to rebuild ~15 native libs for yum/manylinux; those jobs only link, never build here.
+      - name: Upload native libraries
+        uses: actions/upload-artifact@v7
+        with:
+          name: orcsome3-built-libraries
+          path: orcsome3_built_libraries
+          retention-days: 1
+
       - name: Validate backend stub
         id: stubs
         run: make stubs-check

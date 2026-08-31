@@ -8,7 +8,7 @@ import shutil
 import traceback
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable, Optional, cast
+from typing import Any, Callable, List, Optional, cast
 
 from setuptools import setup
 from setuptools.extension import Extension
@@ -841,8 +841,10 @@ def build_core_libraries(
 
 
 def _cythonize_extensions(module_list: list[Extension], **options: Any) -> list[Extension]:
+    # list[...] inside cast()'s first arg is evaluated at runtime (not deferred by `from __future__
+    # import annotations`, unlike real annotations); bare generics need 3.9+, so use typing.List here.
     cythonize: Callable[..., list[Extension]] = cast(
-        Callable[..., list[Extension]],
+        Callable[..., List[Extension]],
         __import__(name="Cython.Build.Dependencies", fromlist=["cythonize"]).cythonize,
     )
     return cythonize(module_list=module_list, **options)

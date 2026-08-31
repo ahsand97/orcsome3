@@ -442,7 +442,11 @@ def build_base_libraries(build_directory: Path, skip_build_external_libs: bool) 
                     f"git switch --detach {LIBRARIES_SOURCES_VERSION[lib_name][1]}",
                     "autoreconf --install",
                     (
+                        # LibRaw's sources are C++ (compiled via g++), so CFLAGS alone never reaches the
+                        # actual compile commands; CXXFLAGS/CPPFLAGS are what autotools' C++ rules consume.
                         f'CFLAGS="{" ".join(build_compiler_args.cflags)}"'
+                        f' CXXFLAGS="{" ".join(build_compiler_args.cflags)}"'
+                        f' CPPFLAGS="{" ".join(build_compiler_args.cflags)}"'
                         f' LDFLAGS="{" ".join(build_compiler_args.libs)}" PKG_CONFIG_PATH="{":".join(pkg_config_path)}"'
                         f" {configure_command}"
                     ),

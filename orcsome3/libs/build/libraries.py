@@ -924,8 +924,7 @@ def cythonize_cython_extensions(
                 path_source_file: Path = Path(source_file)
                 new_path_source_file: Path = build_directory.joinpath(path_source_file.name)
                 _ = shutil.move(src=path_source_file, dst=new_path_source_file)
-                # setuptools rejects absolute paths in Extension.sources: must be relative to setup.py's dir.
-                sources[other_index] = os.path.relpath(path=new_path_source_file, start=Path.cwd())
+                sources[other_index] = str(new_path_source_file)
             extensions[index].sources = sources
         return extensions
     except Exception as e:

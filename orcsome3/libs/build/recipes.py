@@ -277,6 +277,7 @@ CORE_MESON_RECIPES: dict[str, MesonGitRecipe] = {
             "-Dxlib=disabled",
             "-Dzlib=disabled",
             "-Dtests=disabled",
+            "-Dpixman:tests=disabled",
             "-Dgtk2-utils=disabled",
             "-Dglib=disabled",
             "-Dspectre=disabled",

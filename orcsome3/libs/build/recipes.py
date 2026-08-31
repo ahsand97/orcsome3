@@ -222,6 +222,9 @@ MESON_GIT_RECIPES: dict[str, MesonGitRecipe] = {
         artifacts=["libpixman-1.a"],
         meson_flags=[
             "--default-library static",
+            # On Debian/Ubuntu, meson defaults libdir to the multiarch path (lib/x86_64-linux-gnu);
+            # pkg_config_subpath (engine.py) assumes plain "lib", so force it to match.
+            "--libdir=lib",
             "-Db_staticpic=true",
             "-Dopenmp=disabled",
             "-Dgtk=disabled",
@@ -268,6 +271,9 @@ CORE_MESON_RECIPES: dict[str, MesonGitRecipe] = {
         artifacts=["libcairo.a"],
         meson_flags=[
             "--default-library static",
+            # On Debian/Ubuntu, meson defaults libdir to the multiarch path (lib/x86_64-linux-gnu);
+            # pkg_config_subpath (engine.py) assumes plain "lib", so force it to match.
+            "--libdir=lib",
             "-Db_staticpic=true",
             "-Dfontconfig=disabled",
             "-Dfreetype=disabled",

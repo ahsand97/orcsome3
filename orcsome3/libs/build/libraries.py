@@ -1063,6 +1063,10 @@ def main() -> None:
     if force_rebuild_libraries and skip_build_external_libs:
         print("Error: --force-rebuild cannot be used together with --skip-build-external-libs.")
         return
+    if force_rebuild_libraries:
+        # Also bypass the persistent ~/.cache/orcsome3/libs cache (cache.py's force_rebuild()), not just
+        # the build directory — otherwise libraries just get restored from cache, not actually rebuilt.
+        os.environ["ORCSOME3_FORCE_REBUILD"] = "1"
     if not skip_build_external_libs:
         needed_apps: list[str] = ["git", "cargo", "make"]
         if not build_using_dynamic_libraries:

@@ -122,6 +122,9 @@ jobs:
       - wheels-cp39-plus
       - wheels-cp38
       - build_sdist
+    # A real release always publishes (github.ref is the tag, e.g. refs/tags/v1.0.0, not a branch);
+    # a manual workflow_dispatch only publishes when run from master, not a stray feature branch.
+    if: github.event_name == 'release' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
       id-token: write

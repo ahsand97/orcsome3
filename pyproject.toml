@@ -4,10 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orcsome3"
-# SPDX `license = "MIT"` needs setuptools>=77, which dropped Python 3.8 — and wheels-cp38 (CI) needs
-# to keep building. Sticking with this older form means the "license as TOML table"/"license
-# classifiers deprecated" warnings on newer setuptools are unavoidable until 3.8 support is dropped.
-license = {file = "LICENSE"}
+# SPDX form needs setuptools>=77, which dropped Python 3.8 — but wheels-cp38 (CI) resolves an older
+# setuptools that rejects this form outright. python-publish.yml's wheels-cp38 job patches this file
+# back to the old `{file=...}` form + classifier in its own checkout before building; every other
+# consumer (this repo, validate, build_sdist, wheels-cp39-plus) uses the modern form below.
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     {name = "Ahsan Pérez", email = "ahsand.perez@gmail.com"}
 ]
@@ -15,7 +17,6 @@ description = "Scripting extension for NETWM compliant window managers"
 requires-python = ">=3.8"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Development Status :: 4 - Beta",
     "Environment :: X11 Applications",
     "Topic :: Desktop Environment :: Window Managers",

@@ -59,6 +59,25 @@ jobs:
         with:
           persist-credentials: false
 
+      # setuptools>=77 (needed for the SPDX `license = "MIT"` form checked into pyproject.toml) has
+      # dropped Python 3.8; this job resolves an older setuptools that rejects that form outright.
+      # Patch just this job's checkout back to the old {file=...} form + classifier before building.
+      - name: Use classic license form (setuptools<77, no Python 3.8 support past that)
+        run: |
+          python3 -c "
+          content = open('pyproject.toml').read()
+          content = content.replace(
+              'license = \"MIT\"\nlicense-files = [\"LICENSE\"]',
+              'license = {file = \"LICENSE\"}',
+          )
+          content = content.replace(
+              '\"Programming Language :: Python :: 3\",\n    \"Development Status :: 4 - Beta\",',
+              '\"Programming Language :: Python :: 3\",\n    \"License :: OSI Approved :: MIT License\",\n    \"Development Status :: 4 - Beta\",',
+          )
+          open('pyproject.toml', 'w').write(content)
+          "
+          grep -A1 "^license" pyproject.toml
+
       # Static libs already built by `validate` (native, Linux glibc) — only linking happens here,
       # so no cmake/meson/rust toolchain is needed in this job.
       - uses: actions/download-artifact@v8

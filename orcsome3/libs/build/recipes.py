@@ -1,5 +1,7 @@
 """Library source versions and declarative build recipes (used by engine.py)."""
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Any
 
@@ -216,7 +218,13 @@ MESON_GIT_RECIPES: dict[str, MesonGitRecipe] = {
         url=LIBRARIES_SOURCES_VERSION["pixman"][0],
         tag=LIBRARIES_SOURCES_VERSION["pixman"][1],
         source_folder=versioned_folder(
-            name="pixman", version=LIBRARIES_SOURCES_VERSION["pixman"][1].removeprefix("pixman-")
+            # str.removeprefix() is 3.9+; this project targets 3.8.
+            name="pixman",
+            version=(
+                LIBRARIES_SOURCES_VERSION["pixman"][1][len("pixman-") :]
+                if LIBRARIES_SOURCES_VERSION["pixman"][1].startswith("pixman-")
+                else LIBRARIES_SOURCES_VERSION["pixman"][1]
+            ),
         ),
         pkg_config_names=["pixman-1"],
         include_subdirs=["include", "include/pixman-1"],

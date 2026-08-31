@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61", "wheel", "Cython>=3.0"]
+requires = ["setuptools>=61", "wheel", "Cython>=3.0", "typing_extensions"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -42,7 +42,7 @@ packages = [
 ]
 
 [tool.setuptools.cmdclass]
-build_py = "orcsome3.libs.build:BuildPy"
+build_py = "orcsome3.libs.build.BuildPy"
 
 [tool.setuptools.package-data]
 "orcsome3" = ["py.typed", "icons/hicolor/index.theme", "icons/hicolor/scalable/apps/*.svg"]

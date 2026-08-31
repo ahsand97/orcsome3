@@ -69,12 +69,24 @@ reportUnknownParameterType = false
 reportOptionalMemberAccess = false
 reportUnknownArgumentType = false
 
+# The compiled orcsome3_backend.so isn't built for a lint-only run (make lint doesn't need
+# make native); these are the only two files allowed to import it, so only they can hit
+# "found the .pyi, but not the matching .so" (reportMissingModuleSource).
+[[tool.basedpyright.executionEnvironments]]
+root = "orcsome3/libs/xlib.py"
+reportMissingModuleSource = false
+
+[[tool.basedpyright.executionEnvironments]]
+root = "orcsome3/libs/ev.py"
+reportMissingModuleSource = false
+
 [[tool.basedpyright.executionEnvironments]]
 root = "tools/generate_backend_stub.py"
 reportUnknownMemberType = false
 reportUnknownVariableType = false
 reportUnknownArgumentType = false
 reportUnknownParameterType = false
+reportMissingModuleSource = false
 
 # unittest: setUp/tearDown, internals, decorator-registered callbacks
 [[tool.basedpyright.executionEnvironments]]

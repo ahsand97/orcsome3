@@ -110,13 +110,20 @@ jobs:
       name: pypi
       url: https://pypi.org/p/orcsome3
     steps:
+      # Explicit names, not "download everything" — orcsome3-built-libraries (relayed to the wheel
+      # jobs) also exists in this run and would otherwise land in dist/ and break the publish step.
       - uses: actions/download-artifact@v8
         with:
+          pattern: "wheels-*"
           path: dist
           merge-multiple: true
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: sdist
+          path: dist
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
-          password: ${{ secrets.PYPI_API_TOKEN }}

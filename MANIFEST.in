@@ -1,0 +1,4 @@
+include orcsome3_backend.pyi
+include orcsome3/py.typed
+recursive-include orcsome3/icons *
+recursive-include orcsome3/libs/cython_libs *.pxd *.pyx

@@ -1,52 +1,122 @@
-# This workflow will upload a Python Package using Twine when a release is created
-# For more information see: https://help.github.com/en/actions/language-and-framework-guides/using-python-with-github-actions#publishing-to-package-registries
-
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
+# sdist + manylinux wheels → PyPI on a GitHub Release or Actions → Run workflow.
+# `uses:` cannot take ${{ matrix.* }}; pin each cibuildwheel version on its own job.
 
 name: Upload Python Package
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+env:
+  CIBW_SKIP: "*-musllinux_* *t-*"
+  CIBW_BEFORE_BUILD: "pip install 'Cython>=3.0'"
+  CIBW_ENVIRONMENT: "ORCSOME3_BUILD_JOBS=2"
+  CIBW_TEST_SKIP: "*"
+
 jobs:
-  deploy:
+  validate:
+    uses: ./.github/workflows/pr-validation.yml
+    permissions:
+      contents: read
 
+  wheels-cp39-plus:
+    needs: validate
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v3
-    - name: Set up Python
-      uses: actions/setup-python@v3
-      with:
-        python-version: '3.x'
-    - name: Install dependencies
-      run: |
-        sudo apt remove -y imagemagick imagemagick-6-common
-        wget https://imagemagick.org/archive/ImageMagick.tar.gz
-        mkdir -p ./ImageMagick7
-        tar xvzf ImageMagick.tar.gz --directory ./ImageMagick7 --strip-components=1
-        cd ImageMagick7
-        ./configure
-        make
-        sudo make install
-        sudo ldconfig /usr/local/lib
-        
-        sudo apt remove -y nginx libgd3
-        sudo apt install -y libev-dev libx11-dev libxss-dev libxext-dev libgd-dev
-        python -m pip install --upgrade pip
-        pip install build
-    - name: Build package
-      run: |
-        python -m build --sdist
-    - name: Publish package
-      uses: pypa/gh-action-pypi-publish@27b31702a0e7fc50959f5ad993c78deac1bdfc29
-      with:
-        user: __token__
-        password: ${{ secrets.PYPI_API_TOKEN }}
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git cmake autoconf automake libtool pkg-config meson ninja-build \
+            libx11-dev libxss-dev libxext-dev libxtst-dev curl
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: pypa/cibuildwheel@v4.2.0
+        env:
+          CIBW_BUILD: "cp3[9]* cp31*"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-v4.2.0
+          path: wheelhouse/*.whl
+
+  wheels-cp38:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git cmake autoconf automake libtool pkg-config meson ninja-build \
+            libx11-dev libxss-dev libxext-dev libxtst-dev curl
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: pypa/cibuildwheel@v3.4.1
+        env:
+          CIBW_BUILD: "cp38-*"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-v3.4.1
+          path: wheelhouse/*.whl
+
+  build_sdist:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip build
+
+      - name: Build sdist
+        run: python -m build --sdist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  pypi-publish:
+    needs:
+      - wheels-cp39-plus
+      - wheels-cp38
+      - build_sdist
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/p/orcsome3
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          password: ${{ secrets.PYPI_API_TOKEN }}

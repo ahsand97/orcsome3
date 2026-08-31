@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- Back window -->
+  <rect x="1" y="2" width="14" height="11" rx="1.75" fill="#5b7c8a"/>
+  <rect x="1" y="2" width="14" height="3" rx="1.75" fill="#3d5c68"/>
+  <!-- Middle window -->
+  <rect x="4.5" y="6" width="14" height="11" rx="1.75" fill="#2f9e8c"/>
+  <rect x="4.5" y="6" width="14" height="3" rx="1.75" fill="#217a6c"/>
+  <!-- Front window -->
+  <rect x="8" y="10" width="15" height="12" rx="1.75" fill="#e85d9a"/>
+  <rect x="8" y="10" width="15" height="3.25" rx="1.75" fill="#b83280"/>
+  <!-- Hotkey caret -->
+  <path d="M13.25 17.25 L16.25 19.35 L19.25 17.25" fill="none" stroke="#ffe4f1" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

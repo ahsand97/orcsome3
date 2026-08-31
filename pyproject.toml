@@ -1,0 +1,124 @@
+[build-system]
+requires = ["setuptools>=61", "wheel", "Cython>=3.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orcsome3"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Ahsan Pérez", email = "ahsand.perez@gmail.com"}
+]
+description = "Scripting extension for NETWM compliant window managers"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Development Status :: 4 - Beta",
+    "Environment :: X11 Applications",
+    "Topic :: Desktop Environment :: Window Managers",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "Natural Language :: English",
+]
+dependencies = ["dbus-next", "typing_extensions"]
+dynamic = ["version", "readme"]
+
+[project.optional-dependencies]
+dev = ["mypy", "basedpyright", "ruff", "types-setuptools"]
+
+[project.scripts]
+orcsome3 = "orcsome3.run:run"
+
+[project.urls]
+repository = "https://github.com/ahsand97/orcsome3"
+
+[tool.setuptools]
+zip-safe = false
+packages = [
+    "orcsome3",
+    "orcsome3.libs",
+    "orcsome3.libs.build",
+    "orcsome3.libs.cython_libs",
+]
+
+[tool.setuptools.cmdclass]
+build_py = "orcsome3.libs.build:BuildPy"
+
+[tool.setuptools.package-data]
+"orcsome3" = ["py.typed", "icons/hicolor/index.theme", "icons/hicolor/scalable/apps/*.svg"]
+"orcsome3.libs.cython_libs" = ["**/*.pxd", "**/*.pyx"]
+
+[tool.setuptools.dynamic]
+version = {attr = "orcsome3.common.VERSION"}
+readme = {file = ["README.md"], content-type = "text/markdown"}
+
+[tool.basedpyright]
+typeCheckingMode = "all"
+reportAny = false
+reportExplicitAny = false
+reportDeprecated = false
+enableTypeIgnoreComments = false
+extraPaths = ["."]
+ignore = ["orcsome3/tray.py"]
+
+[[tool.basedpyright.executionEnvironments]]
+root = "orcsome3/notify.py"
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownParameterType = false
+reportOptionalMemberAccess = false
+reportUnknownArgumentType = false
+
+# The compiled orcsome3_backend.so isn't built for a lint-only run (make lint doesn't need
+# make native); these are the only two files allowed to import it, so only they can hit
+# "found the .pyi, but not the matching .so" (reportMissingModuleSource).
+[[tool.basedpyright.executionEnvironments]]
+root = "orcsome3/libs/xlib.py"
+reportMissingModuleSource = false
+
+[[tool.basedpyright.executionEnvironments]]
+root = "orcsome3/libs/ev.py"
+reportMissingModuleSource = false
+
+[[tool.basedpyright.executionEnvironments]]
+root = "tools/generate_backend_stub.py"
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportUnknownParameterType = false
+reportMissingModuleSource = false
+
+# unittest: setUp/tearDown, internals, decorator-registered callbacks
+[[tool.basedpyright.executionEnvironments]]
+root = "tests"
+reportPrivateUsage = false
+reportImplicitOverride = false
+reportUninitializedInstanceVariable = false
+reportUnusedFunction = false
+
+[tool.mypy]
+mypy_path = "."
+python_version = "3.10"
+
+[[tool.mypy.overrides]]
+module = "orcsome3.tray"
+ignore_errors = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["I", "PTH", "ANN"]
+ignore = ["ANN401"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["orcsome3"]
+
+[tool.cibuildwheel]
+# 3.9–3.19 via cp31* (picks up new CPythons when cibuildwheel is bumped). 3.8 is a separate CI job
+# (cibuildwheel 4 dropped it). Skip musllinux and free-threaded (cpXXXt) builds.
+build = "cp3[9]* cp31*"
+skip = "*-musllinux_* *t-*"
+before-build = "pip install Cython>=3.0"
+environment = { ORCSOME3_BUILD_JOBS = "2" }

@@ -149,9 +149,19 @@ class NotificationBus(threading.Thread, SingletonMixin):
 
     @classmethod
     def stop(cls) -> None:
-        """Disconnect the session bus (does not join the thread)."""
-        if cls.session_bus is not None:
-            cls.session_bus.disconnect()
+        """Disconnect the session bus, stop its asyncio loop, and join the thread.
+
+        Must finish before the interpreter starts finalizing: a daemon thread still writing to
+        stdout (dbus_next logging, tray `_dbg`) during shutdown crashes CPython with
+        `Fatal Python error: _enter_buffered_busy` / SIGABRT.
+        """
+        instance: Optional[NotificationBus] = cast(Optional["NotificationBus"], cls._singletons.get(cls))
+        if instance is None or cls.session_bus is None:
+            return
+        loop: asyncio.AbstractEventLoop = instance._event_loop
+        _ = loop.call_soon_threadsafe(callback=cls.session_bus.disconnect)
+        _ = loop.call_soon_threadsafe(callback=loop.stop)
+        instance.join(timeout=2.0)
 
     @classmethod
     def restart(cls) -> None:

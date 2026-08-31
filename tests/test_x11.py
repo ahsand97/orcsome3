@@ -270,12 +270,12 @@ class TestWindowManagerSignals(unittest.TestCase):
         unfocused: list[int] = []
 
         @self.wm.on_focus()
-        def on_focus() -> None:
-            focused.append(int(self.wm.event_window))
+        def on_focus(window: Window, _event: xlib.XFocusChangeEvent) -> None:
+            focused.append(int(window))
 
         @self.wm.on_unfocus()
-        def on_unfocus() -> None:
-            unfocused.append(int(self.wm.event_window))
+        def on_unfocus(window: Window, _event: xlib.XFocusChangeEvent) -> None:
+            unfocused.append(int(window))
 
         client: int = 0x3333
         pointer: xlib.XFocusChangeEvent = xlib.XFocusChangeEvent(
@@ -315,12 +315,12 @@ class TestWindowManagerSignals(unittest.TestCase):
         client: int = 0x4444
 
         @self.wm.on_destroy()
-        def on_any() -> None:
-            all_gone.append(int(self.wm.event_window))
+        def on_any(window: Window, _event: xlib.XDestroyWindowEvent) -> None:
+            all_gone.append(int(window))
 
         @self.wm.on_destroy(window=client)
-        def on_one() -> None:
-            one_gone.append(int(self.wm.event_window))
+        def on_one(window: Window, _event: xlib.XDestroyWindowEvent) -> None:
+            one_gone.append(int(window))
 
         event: xlib.XDestroyWindowEvent = xlib.XDestroyWindowEvent(display=self.wm.display, event=client, window=client)
         self.wm._handle_destroy(event=event)
@@ -433,7 +433,7 @@ class TestGrabDelivery(unittest.TestCase):
         if probe is None:
             _stop_nested_x()
             if cls._saved_display is None:
-                _ = os.environ.pop(key="DISPLAY", default=None)
+                _ = os.environ.pop("DISPLAY", default=None)
             else:
                 os.environ["DISPLAY"] = cls._saved_display
             raise unittest.SkipTest("no X display")
@@ -443,7 +443,7 @@ class TestGrabDelivery(unittest.TestCase):
     def tearDownClass(cls) -> None:
         _stop_nested_x()
         if cls._saved_display is None:
-            _ = os.environ.pop(key="DISPLAY", default=None)
+            _ = os.environ.pop("DISPLAY", default=None)
         else:
             os.environ["DISPLAY"] = cls._saved_display
 

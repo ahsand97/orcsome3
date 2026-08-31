@@ -41,7 +41,7 @@ cdef extern from "ev.h":
     ev_loop *ev_loop_new(unsigned int flags)
     void ev_loop_destroy(ev_loop *loop)
     void ev_break(ev_loop *loop, int how)
-    int ev_run(ev_loop *loop, int flags)
+    int ev_run(ev_loop *loop, int flags) nogil
     void ev_io_start(ev_loop *loop, ev_io *watcher)
     void ev_io_stop(ev_loop *loop, ev_io *watcher)
     void ev_signal_start(ev_loop *loop, ev_signal *signal)
@@ -55,10 +55,10 @@ cdef extern from "ev.h":
     void ev_stat_stop(ev_loop *loop, ev_stat *watcher)
 
 ctypedef ev_loop evLoop
-ctypedef void (*io_cb)(ev_loop *loop, ev_io *watcher, int revents)  # type: ignore
-ctypedef void (*signal_cb)(ev_loop *loop, ev_signal *watcher, int revents)  # type: ignore
-ctypedef void (*timer_cb)(ev_loop *loop, ev_timer *watcher, int revents)  # type: ignore
-ctypedef void (*stat_cb)(ev_loop *loop, ev_stat *watcher, int revents)  # type: ignore
+ctypedef void (*io_cb)(ev_loop *loop, ev_io *watcher, int revents) noexcept nogil  # type: ignore
+ctypedef void (*signal_cb)(ev_loop *loop, ev_signal *watcher, int revents) noexcept nogil  # type: ignore
+ctypedef void (*timer_cb)(ev_loop *loop, ev_timer *watcher, int revents) noexcept nogil  # type: ignore
+ctypedef void (*stat_cb)(ev_loop *loop, ev_stat *watcher, int revents) noexcept nogil  # type: ignore
 
 cdef extern from "ev.h":
     void ev_io_init(ev_io *ev_io, io_cb callback, int fd, int events)

@@ -20,7 +20,7 @@ What the stub contains:
   are ignored by Cython and are not a field source.
 - `def` signatures copied from Python `->` annotations on the `.pyx`.
 
-`make stubs` writes the file. `make lint` runs this script with `--check` (must match the
+`make stubs` writes the file. `make stubs-check` (CI) runs this script with `--check` (must match the
 committed `.pyi`).
 """
 
@@ -435,7 +435,7 @@ def main() -> int:
     _ = parser.add_argument(
         "--check",
         action="store_true",
-        help="exit 1 if the committed .pyi does not match a fresh generate() (used by make lint)",
+        help="exit 1 if the committed .pyi does not match a fresh generate() (used by make stubs-check)",
     )
     args: argparse.Namespace = parser.parse_args()
     stub: str = generate()

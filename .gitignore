@@ -210,7 +210,3 @@ orcsome3/libs/cython_libs/resvg/*
 orcsome3/libs/cython_libs/xlib/*
 !orcsome3/libs/cython_libs/xlib/__init__.pxd
 !orcsome3/libs/cython_libs/xlib/xlib.pxd
-
-# Local rc scratch (not part of the package)
-prueba.py
-todo

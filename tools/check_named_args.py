@@ -1,6 +1,7 @@
 """Fail when a call passes positional args that the callee accepts as keywords.
 
-Skip positional-only params, *args, unknown callees, and signatures we cannot resolve.
+Skip positional-only params, *args, unknown callees, signatures we cannot resolve,
+and Mapping key args (`get`/`pop`/…) that inspect reports as keywords but stubs mark `/`.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import builtins
 import importlib
 import inspect
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Iterator, NamedTuple, Optional, Union
 
@@ -20,6 +22,10 @@ VARPOS: Any = inspect.Parameter.VAR_POSITIONAL
 SKIP_ROOT: set[str] = {"venv", ".venv", "build", "dist"}
 SKIP_ANY: set[str] = {".git", "__pycache__", "orcsome3-stubs"}
 SKIP_FILES: set[str] = {"prueba.py"}
+# inspect often reports Mapping.get/pop key as PORK; typeshed/mypy treat it as positional-only.
+_MAPPING_KEY_METHODS: frozenset[str] = frozenset(
+    {"get", "pop", "setdefault", "__getitem__", "__setitem__", "__delitem__"}
+)
 
 
 class Sig(NamedTuple):
@@ -62,6 +68,22 @@ def _sig_from_inspect(obj: Any, *, drop_self: bool) -> Optional[Sig]:
     if drop_self and params and params[0][0] in {"self", "cls"}:
         params = params[1:]
     return Sig(params=tuple(params))
+
+
+def _is_mapping_like(obj: object) -> bool:
+    if isinstance(obj, Mapping):
+        return True
+    return isinstance(obj, type) and issubclass(obj, Mapping)
+
+
+def _adjust_mapping_method_sig(*, parent: object, method: str, sig: Sig) -> Sig:
+    """Mark Mapping key args positional-only so we do not require `key=` (mypy rejects it)."""
+    if method not in _MAPPING_KEY_METHODS or not sig.params or not _is_mapping_like(obj=parent):
+        return sig
+    name, kind = sig.params[0]
+    if kind is not PORK:
+        return sig
+    return Sig(params=((name, POSONLY), *sig.params[1:]))
 
 
 class Index:
@@ -186,17 +208,22 @@ def _inspect_mod_attr(modname: str, *attrs: str) -> Optional[Sig]:
         return None
     try:
         obj: object = importlib.import_module(name=modname)
+        parent: object = obj
         for attr in attrs:
+            parent = obj
             obj = getattr(obj, attr)
         if inspect.isclass(object=obj):
             return _sig_from_inspect(obj=obj.__init__, drop_self=True)
-        return _sig_from_inspect(
+        sig: Optional[Sig] = _sig_from_inspect(
             obj=obj,
             drop_self=inspect.ismethoddescriptor(object=obj)
             or inspect.isfunction(object=obj)
             and hasattr(obj, "__qualname__")
             and "." in getattr(obj, "__qualname__", ""),
         )
+        if sig is None or not attrs:
+            return sig
+        return _adjust_mapping_method_sig(parent=parent, method=attrs[-1], sig=sig)
     except Exception:
         return None
 
@@ -208,8 +235,12 @@ def _inspect_method(modname: str, cls: str, method: str) -> Optional[Sig]:
         obj: object = importlib.import_module(name=modname)
         for part in cls.split("."):
             obj = getattr(obj, part)
+        parent: object = obj
         obj = getattr(obj, method)
-        return _sig_from_inspect(obj=obj, drop_self=True)
+        sig: Optional[Sig] = _sig_from_inspect(obj=obj, drop_self=True)
+        if sig is None:
+            return None
+        return _adjust_mapping_method_sig(parent=parent, method=method, sig=sig)
     except Exception:
         return None
 
@@ -477,6 +508,8 @@ def _self_check() -> None:
     assert hits_for(src="def f(a, b):\n    f(a=1, b=2)\n") == []
     assert hits_for(src="def f(a, b):\n    f(1, b=2)\n") == ["a"]
     assert hits_for(src="len(x)\n") == []
+    assert hits_for(src="import os\nos.environ.pop('DISPLAY')\n") == []
+    assert hits_for(src="import os\nos.environ.pop('DISPLAY', None)\n") == ["default"]
     print("check_named_args self-check ok")
 
 

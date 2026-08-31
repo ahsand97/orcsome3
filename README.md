@@ -25,11 +25,13 @@ config.py  (your script)
 
 - Global and per-window hotkeys (`XGrabKey`), including CapsLock/NumLock variants
 - React to window create / manage / destroy / property / focus
-- NETWM/EWMH: desktops, maximize, fullscreen, decorations, close, move/resize, icons
+- NETWM/EWMH: desktops, maximize, fullscreen, decorations, close, move/resize, icons — `set_icon` takes SVG (via resvg) or PNG/JPEG/GIF/BMP/ICO/WebP/TIFF/… (via ImageMagick 7), not just one format
 - Freedesktop notifications (`dbus-next` → `org.freedesktop.Notifications`)
 - Typed `config.py` (mypy / basedpyright)
 
 ## 📦 Install
+
+libev, Cairo, ImageMagick 7, gd, and resvg are all **statically linked** into `orcsome3_backend.so`. Whether you install the wheel from PyPI or build from source, you never install any of them yourself — the only external runtime dependency is X11.
 
 ### X11 libraries
 
@@ -90,22 +92,22 @@ make run             # python -m orcsome3  (needs ~/.config/orcsome3/config.py)
 
 Create `~/.config/orcsome3/config.py` (or pass `-c`). If the file is missing, orcsome3 logs an error and exits.
 
-Most hooks take `window=None` (every window) or `window=wm.event_window` (one id, usually nested under `on_manage`). Callbacks that take no event use `wm.event_window`. Decorated functions get `.remove()` to unregister.
+Every hook except `on_init`/`on_deinit`/`on_timer` calls back as `(window, event)` — `on_key`/`on_button`/`on_create` and friends all follow this shape, so there's one pattern to learn. Most take `window=None` (every window) or `window=` a specific id (typically the `window` parameter from `on_manage`, nested). `wm.event_window` still works as a side-channel (e.g. from code that isn't itself inside a callback), but the parameter is what you'll normally use. Decorated functions get `.remove()` to unregister.
 
 ### Decorators
 
-- **`@wm.on_init` / `@wm.on_deinit`** — no parentheses. `on_init` runs once at startup after root events are selected, before existing clients are scanned. `on_deinit` runs in `stop()` after key/button grabs and timers are torn down.
-- **`@wm.on_key(...)`** — `XGrabKey` on KeyPress. Default is a **global** hotkey (grab on the root). The callback’s `window` is that grab window; use `wm.current_window` for the focused client. Pass `window_matcher=` to grab on matching clients instead. orcsome3 consumes the key unless `propagate_event=True`. CapsLock/NumLock variants are grabbed for you. `"Control + b"` or a `KeyDefinition`; modifiers `Control`/`Ctrl`, `Alt`/`Meta`, `Shift`, `Win`/`Super`, `AnyModifier`; keys are X keysym names (`XK_` stripped).
+- **`@wm.on_init` / `@wm.on_deinit`** — no parentheses, no arguments. `on_init` runs once at startup after root events are selected, before existing clients are scanned. `on_deinit` runs in `stop()` after key/button grabs and timers are torn down.
+- **`@wm.on_key(...)`** — `XGrabKey` on KeyPress. Default is a **global** hotkey (grab on the root). The callback's `window` is that grab window; use `wm.current_window` for the focused client. Pass `window_matcher=` to grab on matching clients instead. orcsome3 consumes the key unless `propagate_event=True`. CapsLock/NumLock variants are grabbed for you. `"Control + b"` or a `KeyDefinition`; modifiers `Control`/`Ctrl`, `Alt`/`Meta`, `Shift`, `Win`/`Super`, `AnyModifier`; keys are X keysym names (`XK_` stripped).
 - **`@wm.on_key_release(...)`** — same grab as `on_key`, but KeyRelease. Register both for the same combo; they share one `XGrabKey`.
 - **`@wm.on_button(...)`** — `XGrabButton` on ButtonPress (`BUTTONS.Button1`…`Button5` or `AnyButton`). Same root-vs-`window_matcher` and `propagate_event` rules as `on_key`.
-- **`@wm.on_create(...)`** — CreateNotify, **including** windows already mapped when orcsome3 starts. Optional `matcher=WindowMatchers(...)`. Use `event_window` in the callback.
-- **`@wm.on_manage(...)`** — same as `on_create`, but **skips** the startup sweep. Nest per-window `@wm.on_destroy(window=...)` (and similar) here so you do not attach once per existing client.
-- **`@wm.on_destroy(...)`** — DestroyNotify. After destroy, reading properties on that id will fail.
+- **`@wm.on_create(...)`** — CreateNotify, **including** windows already mapped when orcsome3 starts. Optional `matcher=WindowMatchers(...)`. `event` is `None` for that startup sweep (no real CreateNotify exists for windows that already existed) and a real `XCreateWindowEvent` otherwise.
+- **`@wm.on_manage(...)`** — same as `on_create`, but **skips** the startup sweep, so `event` is always a real `XCreateWindowEvent`, never `None`. Nest per-window `@wm.on_destroy(window=...)` (and similar) here so you do not attach once per existing client.
+- **`@wm.on_destroy(...)`** — DestroyNotify. `window` is only that id; reading properties on it will fail (it is already gone).
 - **`@wm.on_property_change(property="...")`** — PropertyNotify when an atom (`_NET_WM_STATE`, …) gets a new value.
 - **`@wm.on_focus()` / `@wm.on_unfocus()`** — FocusIn / FocusOut (`NotifyNormal` / `NotifyWhileGrabbed` only; pointer-detail and grab-notify are ignored).
-- **`@wm.on_map()` / `@wm.on_unmap()` / `@wm.on_configure()`** — MapNotify / UnmapNotify / ConfigureNotify. Callback is `(window, event)`. Configure fires often during resize; size is `event.width` / `event.height` (not a later `get_geometry()`).
-- **`@wm.on_client_message(message_type="...")`** — ClientMessage filtered by atom name (`_NET_ACTIVE_WINDOW`, …). Callback is `(window, event)`.
-- **`@wm.on_timer(timeout=...)`** — repeating libev timer (seconds). Return `True` to stop; `None`/falsy keeps it. Also `.start()` / `.stop()` / `.again()`. Needs the process event loop (normal `orcsome3` has one).
+- **`@wm.on_map()` / `@wm.on_unmap()` / `@wm.on_configure()`** — MapNotify / UnmapNotify / ConfigureNotify. Configure fires often during resize; size is `event.width` / `event.height` (not a later `get_geometry()`).
+- **`@wm.on_client_message(message_type="...")`** — ClientMessage filtered by atom name (`_NET_ACTIVE_WINDOW`, …).
+- **`@wm.on_timer(timeout=...)`** — repeating libev timer (seconds), callback takes no arguments. Return `True` to stop; `None`/falsy keeps it. Also `.start()` / `.stop()` / `.again()`. Needs the process event loop (normal `orcsome3` has one).
 
 Example `config.py`:
 
@@ -120,14 +122,28 @@ from orcsome3.libs.xlib import (
     XButtonEvent,
     XClientMessageEvent,
     XConfigureEvent,
+    XCreateWindowEvent,
+    XDestroyWindowEvent,
+    XFocusChangeEvent,
     XKeyEvent,
     XMapEvent,
+    XPropertyEvent,
     XUnmapEvent,
 )
 from orcsome3.notify import Notification
 from orcsome3.window_manager import Window, WindowManager
 
 wm: WindowManager = get_wm()
+
+
+# Hide the title bar while a window is maximized, restore it otherwise.
+@wm.on_property_change(property="_NET_WM_STATE")
+def hide_title_bar_when_maximized(window: Window, event: XPropertyEvent) -> None:
+    if window.maximized_horz and window.maximized_vert:
+        if window.decorated:
+            window.set_state(decorate=False)
+    elif not window.decorated:
+        window.set_state(decorate=True)
 
 
 @wm.on_init
@@ -165,43 +181,35 @@ def on_ctrl_click(window: Window, event: XButtonEvent) -> None:
     print(event.x, event.y)
 
 
+# `event` is None during the startup sweep (no real CreateNotify for windows that already existed).
 @wm.on_create()
-def on_any_create() -> None:
-    print(wm.event_window.get_name_and_class())
+def on_any_create(window: Window, event: Optional[XCreateWindowEvent]) -> None:
+    print(window.get_name_and_class())
 
 
 @wm.on_manage(matcher=WindowMatchers(name="easyeffects", class_="easyeffects"))
-def on_easyeffects() -> None:
-    wm.event_window.set_icon(icon=Path("/path/to/icon.svg"))
+def on_easyeffects(window: Window, event: XCreateWindowEvent) -> None:
+    # .svg goes through resvg; any other extension (.png, .jpg, .ico, …) goes through ImageMagick
+    window.set_icon(icon=Path("/path/to/icon.svg"))
 
-    @wm.on_destroy(window=wm.event_window)
-    def on_easyeffects_gone() -> None:
+    @wm.on_destroy(window=window)
+    def on_easyeffects_gone(window: Window, event: XDestroyWindowEvent) -> None:
         print("easyeffects closed")
 
 
 @wm.on_destroy()
-def on_any_destroy() -> None:
-    print(f"destroyed {wm.event_window}")
-
-
-@wm.on_property_change(property="_NET_WM_STATE")
-def hide_title_bar_when_maximized() -> None:
-    w: Window = wm.event_window
-    if w.maximized_horz and w.maximized_vert:
-        if w.decorated:
-            w.set_state(decorate=False)
-    elif not w.decorated:
-        w.set_state(decorate=True)
+def on_any_destroy(window: Window, event: XDestroyWindowEvent) -> None:
+    print(f"destroyed {window}")
 
 
 @wm.on_focus()
-def on_focus() -> None:
-    print(f"focus {wm.event_window}")
+def on_focus(window: Window, event: XFocusChangeEvent) -> None:
+    print(f"focus {window}")
 
 
 @wm.on_unfocus()
-def on_unfocus() -> None:
-    print(f"unfocus {wm.event_window}")
+def on_unfocus(window: Window, event: XFocusChangeEvent) -> None:
+    print(f"unfocus {window}")
 
 
 @wm.on_map()
@@ -231,7 +239,7 @@ def every_minute() -> Optional[bool]:
 
 
 @wm.on_manage(matcher=WindowMatchers(name="Navigator", class_="firefox", window_type=["_NET_WM_WINDOW_TYPE_NORMAL"]))
-def firefox_opened() -> None:
+def firefox_opened(window: Window, event: XCreateWindowEvent) -> None:
     n: Notification = Notification(
         app_name="Firefox",
         summary="Firefox is now open!",
@@ -252,9 +260,20 @@ orcsome3
 
 Useful flags: `--config PATH`, `--log-file PATH`, `--log-level DEBUG`, `--version`.
 
-One process per `$DISPLAY` (lock under `$XDG_RUNTIME_DIR/orcsome3/`). Extra monitors on the same X server share that instance. A second X server (Chrome Remote Desktop, VNC, `:1`) is a separate process and does not steal grabs from `:0`. Saving the loaded config reloads it (or send `SIGUSR1`). `SIGINT` / `SIGTERM` quit.
+One process per `$DISPLAY` (lock under `$XDG_RUNTIME_DIR/orcsome3/`). Extra monitors on the same X server share that instance. A second X server (Chrome Remote Desktop, VNC, `:1`) is a separate process and does not steal grabs from `:0`. Saving the loaded config reloads it automatically (or send `SIGUSR1`). `SIGINT` / `SIGTERM` quit.
 
-A tray icon appears when your panel has a StatusNotifier (SNI) host — most do (KDE, many tint2/Waybar/Polybar setups, etc.). The menu is **Reload config** and **Quit**. If no host is on the session bus, there is no icon; signals still work.
+If the config file fails to load (syntax error, exception at import time), orcsome3 does **not** crash — it logs the exception and keeps running with no handlers installed until the next successful reload. This applies to the very first load too. A missing `--config` **path** is different and still exits at startup; a broken file at a real path does not. See the tray icon below for how that error is surfaced.
+
+### 🖱️ Tray icon
+
+A tray icon appears when your panel has a StatusNotifier (SNI) host — most do (KDE, LXQt, many tint2/Waybar/Polybar setups, etc.). If no host is on the session bus, there is no icon; signals still work. The icon is rendered straight from the packaged SVG into the D-Bus pixmap (via `resvg`, already a build dependency) — nothing is ever copied into `~/.local/share/icons` or left behind on uninstall.
+
+Right-click for the menu:
+
+- **Config: `<path>`** — the config file currently loaded (informational).
+- **Error: `...`** — only shown while the config has a load error; same text as the icon's tooltip. The icon itself also switches to a distinct "error" variant (red dot) while this is active, and a desktop notification fires too if a notification daemon is running. Clears on the next successful reload.
+- **Change config file...** — only shown if `zenity` or `kdialog` is installed on your system; opens a file picker and switches to the selected config live (no restart).
+- **Quit** — sends `SIGTERM`.
 
 ## 🛠️ Develop
 

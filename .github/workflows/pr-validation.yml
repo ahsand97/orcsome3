@@ -1,0 +1,153 @@
+# Format, lint, backend stub, tests. Comments the PR with a status table.
+# Also callable from python-publish.yml so a release cannot skip the same gates.
+
+name: Validate
+
+on:
+  pull_request:
+    branches: [dev, master]
+  push:
+    branches: [dev, master]
+  workflow_call:
+
+concurrency:
+  group: pr-validation-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  LANG: C.UTF-8
+  LC_ALL: C.UTF-8
+  LANGUAGE: C
+  ORCSOME3_BUILD_JOBS: "2"
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install -U pip
+          python -m pip install dbus-next typing_extensions "Cython>=3.0" mypy basedpyright ruff
+
+      - name: Check code formatting
+        id: formatting
+        run: make format-check
+
+      - name: Lint
+        id: lint
+        run: make lint
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git cmake autoconf automake libtool pkg-config meson ninja-build \
+            libx11-dev libxss-dev libxext-dev libxtst-dev curl xvfb
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Cache native libraries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/orcsome3/libs
+            orcsome3_built_libraries
+          key: native-${{ runner.os }}-${{ hashFiles('orcsome3/libs/build/**', 'orcsome3/common.py') }}
+          restore-keys: |
+            native-${{ runner.os }}-
+
+      - name: Build native backend
+        run: |
+          if [ -d orcsome3_built_libraries ]; then
+            make native-fast
+          else
+            make native
+          fi
+
+      - name: Validate backend stub
+        id: stubs
+        run: make stubs-check
+
+      - name: Run tests
+        id: tests
+        run: make test
+
+      - name: Comment PR status
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const checks = {
+              formatting: '${{ steps.formatting.outcome }}' === 'success',
+              lint: '${{ steps.lint.outcome }}' === 'success',
+              stubs: '${{ steps.stubs.outcome }}' === 'success',
+              tests: '${{ steps.tests.outcome }}' === 'success',
+            };
+            const allPassed = Object.values(checks).every(v => v);
+            const status = allPassed ? '✅ All checks passed!' : '❌ Some checks failed';
+
+            let body = `## PR Validation Results\n\n${status}\n\n`;
+            body += '| Check | Status |\n|-------|--------|\n';
+            body += `| Code formatting (ruff format) | ${checks.formatting ? '✅' : '❌'} |\n`;
+            body += `| Lint (ruff, mypy, basedpyright, named-args, explicit-types) | ${checks.lint ? '✅' : '❌'} |\n`;
+            body += `| Backend stub (\`orcsome3_backend.pyi\`) | ${checks.stubs ? '✅' : '❌'} |\n`;
+            body += `| Tests (unittest) | ${checks.tests ? '✅' : '❌'} |\n`;
+
+            if (!checks.formatting) {
+              body += '\n\n**The code was not properly formatted.** Run:\n\n';
+              body += '```bash\nmake format\n```\n\nThen commit the changes.';
+            }
+            if (!checks.lint) {
+              body += '\n\n**Lint failed.** Run:\n\n';
+              body += '```bash\nmake lint\n```';
+            }
+            if (!checks.stubs) {
+              body += '\n\n**Backend stub is stale.** Run:\n\n';
+              body += '```bash\nmake stubs\n```\n\nThen commit `orcsome3_backend.pyi`. Needs a built `.so` (`make native` / `make native-fast`).';
+            }
+            if (!checks.tests) {
+              body += '\n\n**Tests failed.** Run:\n\n';
+              body += '```bash\nmake test\n```\n\nX11 tests skip without a display; CI installs Xvfb.';
+            }
+
+            const marker = '## PR Validation Results';
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(
+              (c) => c.user && c.user.type === 'Bot' && c.body && c.body.includes(marker)
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

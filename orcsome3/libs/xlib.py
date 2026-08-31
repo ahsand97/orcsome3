@@ -1969,6 +1969,14 @@ def set_window_icon(display: TYPES.Cython_Display, window: TYPES.Cython_Window, 
     return bool(orcsome3_backend.PySetWindowIcon(display=display, window=window, filepath=icon_path))
 
 
+def render_svg_to_argb(svg_path: Path, size: int) -> Optional[bytes]:
+    """Rasterize `svg_path` to `size`x`size` raw ARGB32 pixels (network byte order: A,R,G,B per
+    pixel) via resvg. `None` if the file can't be parsed. No X display or window involved.
+    """
+    result: Optional[bytes] = orcsome3_backend.PyRenderSvgToArgb(filepath=str(svg_path), size=size)
+    return result
+
+
 def x_string_to_keysym(string: str) -> TYPES.Cython_KeySym:
     """Wrapper for `XStringToKeysym`"""
     return TYPES.Cython_KeySym(orcsome3_backend.PyXStringToKeysym(string=string))

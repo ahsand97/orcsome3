@@ -17,7 +17,8 @@ from typing import Callable, Optional, TextIO, Union, cast
 from orcsome3.common import APPNAME, VERSION
 from orcsome3.instance import acquire_display_lock, display_key
 from orcsome3.libs.ev import Loop, SignalWatcher, StatWatcher, TimerWatcher
-from orcsome3.notify import NotificationBus
+from orcsome3.notify import Notification, NotificationBus
+from orcsome3.tray import report_error, set_config_path, take_pending_config_path
 from orcsome3.utils import SingletonMixin, execfile
 from orcsome3.window_manager import WindowManager
 
@@ -62,6 +63,7 @@ class _Orcsome3(SingletonMixin):
             sys.exit(1)
 
         self._config_file = config_file.resolve()
+        set_config_path(path=self._config_file)
         self._loop = Loop.new()
         self._wm = WindowManager(loop=self.loop)
 
@@ -73,8 +75,9 @@ class _Orcsome3(SingletonMixin):
         self._watch_signal(
             signal_number=Signals.SIGUSR1, callback=lambda __loop__, __watcher__, __events__: self.restart()
         )
+        self._watch_signal(signal_number=Signals.SIGUSR2, callback=self._on_config_selected)
 
-        _ = self.load_config(fatal=True)
+        _ = self.load_config()
         self._start_rc_watcher()
 
         _ = NotificationBus()
@@ -89,9 +92,15 @@ class _Orcsome3(SingletonMixin):
 
     def _start_rc_watcher(self) -> None:
         """Watch the config file via `ev_stat` (inotify, with a libev `stat` fallback)."""
+        self._rearm_rc_watcher()
+        self._rc_debounce = TimerWatcher.new(callback=self._on_rc_debounce, after=_RC_DEBOUNCE_SECONDS, repeat=0.0)
+
+    def _rearm_rc_watcher(self) -> None:
+        """(Re)point the `ev_stat` watcher at `self.config_file` — startup, and after switching files."""
+        if self._rc_watcher is not None:
+            self._rc_watcher.close(loop=self.loop)
         self._rc_watcher = StatWatcher.new(callback=self._on_rc_stat, path=str(self.config_file), interval=0.0)
         self._rc_watcher.start(loop=self.loop)
-        self._rc_debounce = TimerWatcher.new(callback=self._on_rc_debounce, after=_RC_DEBOUNCE_SECONDS, repeat=0.0)
 
     def _on_rc_stat(self, __loop__: Loop, __watcher__: StatWatcher, __events__: int) -> None:
         if self._rc_debounce is None:
@@ -100,6 +109,18 @@ class _Orcsome3(SingletonMixin):
         self._rc_debounce.start(loop=self.loop, after=_RC_DEBOUNCE_SECONDS)
 
     def _on_rc_debounce(self, __loop__: Loop, __watcher__: TimerWatcher, __events__: int) -> None:
+        _logger.info(msg=f"{self.config_file.name} changed; reloading...")
+        self.restart()
+
+    def _on_config_selected(self, __loop__: Loop, __watcher__: SignalWatcher, __events__: int) -> None:
+        """Sent by the tray's "Change config file..." picker (`tray._pick_new_config`) after a real pick."""
+        path: Optional[Path] = take_pending_config_path()
+        if path is None:
+            return
+        self._config_file = path.resolve()
+        set_config_path(path=self._config_file)
+        self._rearm_rc_watcher()
+        _logger.info(msg=f"Switched config file to {self._config_file}; reloading...")
         self.restart()
 
     def restart(self) -> None:
@@ -110,7 +131,7 @@ class _Orcsome3(SingletonMixin):
         try:
             self.wm.stop()
             _logger.info(msg="Restarting...")
-            loaded: bool = self.load_config(fatal=False)
+            loaded: bool = self.load_config()
             self.wm.init()
             if loaded:
                 _logger.info(msg="Restarted successfully")
@@ -121,7 +142,7 @@ class _Orcsome3(SingletonMixin):
 
     def stop(self) -> None:
         """Ungrab keys, close the display, disconnect D-Bus, and break the event loop."""
-        print("Stopping orcsome3...")
+        _logger.info(msg="Stopping orcsome3...")
         for watcher in self._signal_watchers:
             watcher.close(loop=self.loop)
         self._signal_watchers = []
@@ -142,8 +163,13 @@ class _Orcsome3(SingletonMixin):
             self.loop.destroy()
             self._loop = None
 
-    def load_config(self, *, fatal: bool = True) -> bool:
-        """Exec the config file with `__file__` / `__name__` set. Initial load exits on error; reload does not."""
+    def load_config(self) -> bool:
+        """Exec the config file with `__file__` / `__name__` set.
+
+        Never exits the process: a broken config (initial load or reload) leaves orcsome3 running
+        with no handlers installed rather than crashing, and reports the error via `tray.report_error`
+        (tray icon + tooltip + menu row) and a best-effort desktop notification.
+        """
         config_dir: str = str(self.config_file.parent)
         config_globals: dict[str, object] = {
             "__file__": str(self.config_file),
@@ -152,14 +178,16 @@ class _Orcsome3(SingletonMixin):
         try:
             sys.path.insert(0, config_dir)
             execfile(filepath=self.config_file, globals_=config_globals)
-        except Exception:
+        except Exception as e:
             _logger.exception(msg=f"Error on loading {self.config_file}")
-            if fatal:
-                sys.exit(1)
+            message: str = f"{type(e).__name__}: {e}"
+            report_error(message=message)
+            Notification(summary="orcsome3: config error", body=message).show()
             return False
         finally:
             if sys.path and sys.path[0] == config_dir:
                 _ = sys.path.pop(0)
+        report_error(message=None)
         return True
 
 

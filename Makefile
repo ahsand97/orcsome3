@@ -7,12 +7,14 @@ export LANG := C.UTF-8
 export LC_ALL := C.UTF-8
 export LANGUAGE := C
 
-.PHONY: help format lint stubs install install-dev uninstall build native native-rebuild native-fast clean dev run test
+.PHONY: help format format-check lint stubs stubs-check install install-dev uninstall build native native-rebuild native-fast clean dev run test
 
 help:
 	@echo "format          ruff format + isort"
-	@echo "lint            mypy + basedpyright + named-args + explicit-types + stub check"
+	@echo "format-check    ruff format --check (CI)"
+	@echo "lint            ruff + mypy + basedpyright + named-args + explicit-types"
 	@echo "stubs           regenerate orcsome3_backend.pyi from the Cython backend"
+	@echo "stubs-check     fail if orcsome3_backend.pyi is stale (CI)"
 	@echo "dev             venv + deps + native backend (does not pip-install orcsome3)"
 	@echo "run             python -m orcsome3 from this tree (needs: make dev)"
 	@echo "test            unittest (X tests skip if DISPLAY cannot be opened)"
@@ -29,8 +31,14 @@ format:
 	$(PYTHON) -m ruff check --fix .
 	$(PYTHON) -m ruff format .
 
+format-check:
+	$(PYTHON) -m ruff format --check .
+
 stubs:
 	$(PYTHON) tools/generate_backend_stub.py
+
+stubs-check:
+	$(PYTHON) tools/generate_backend_stub.py --check
 
 lint:
 	$(PYTHON) -m ruff check .
@@ -38,7 +46,6 @@ lint:
 	$(PYTHON) -m basedpyright --pythonpath $(PYTHON) orcsome3 setup.py orcsome3_backend.pyi tools tests
 	$(PYTHON) tools/check_named_args.py
 	$(PYTHON) tools/check_explicit_types.py
-	$(PYTHON) tools/generate_backend_stub.py --check
 
 test:
 	$(PYTHON) -m unittest discover -s tests -v

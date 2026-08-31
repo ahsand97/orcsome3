@@ -895,7 +895,13 @@ cdef class PyLoop:
                 run_flags |= flag
         else:
             run_flags = flags
-        libev.ev_run(loop=self.loop, flags=run_flags)
+        cdef libev.ev_loop *loop_ptr = self.loop
+        # Release the GIL while blocked waiting for the next event, otherwise no other Python
+        # thread (e.g. the NotificationBus/tray asyncio thread) can run until one arrives.
+        # default_callback (below, for every watcher type) reacquires the GIL before touching
+        # any Python object, since libev calls it directly from C while nogil is in effect.
+        with nogil:
+            libev.ev_run(loop=loop_ptr, flags=run_flags)
 
     def break_(self, how_to_break_flag: int) -> None:
         libev.ev_break(loop=self.loop, how=how_to_break_flag)
@@ -952,13 +958,16 @@ cdef class PyIOWatcher:
         libev.ev_io_stop(loop=loop.loop, watcher=self.io_watcher)
 
     @staticmethod
-    cdef default_callback(libev.ev_loop *ev_loop, libev.ev_io *io_watcher, int revents):
-        callbacks_dict: dict[str, Callable[..., Any]] = <dict>io_watcher.data
-        callbacks_dict["default"](
-            PyLoop._new_(loop=ev_loop),
-            PyIOWatcher._new_(io_watcher=io_watcher, callbacks=callbacks_dict),
-            revents
-        )
+    cdef void default_callback(libev.ev_loop *ev_loop, libev.ev_io *io_watcher, int revents) noexcept nogil:
+        # ev_run() runs with the GIL released (see PyLoop.run); reacquire it before touching
+        # any Python object, since this callback is invoked directly from libev's C code.
+        with gil:
+            callbacks_dict: dict[str, Callable[..., Any]] = <dict>io_watcher.data
+            callbacks_dict["default"](
+                PyLoop._new_(loop=ev_loop),
+                PyIOWatcher._new_(io_watcher=io_watcher, callbacks=callbacks_dict),
+                revents
+            )
 
 cdef class PySignalWatcher:
     cdef libev.ev_signal *signal_watcher
@@ -1011,13 +1020,16 @@ cdef class PySignalWatcher:
         libev.ev_signal_stop(loop=loop.loop, signal=self.signal_watcher)
 
     @staticmethod
-    cdef default_callback(libev.ev_loop *ev_loop, libev.ev_signal *signal_watcher, int revents):
-        callbacks_dict: dict[str, Callable[..., Any]] = <dict>signal_watcher.data
-        callbacks_dict["default"](
-            PyLoop._new_(loop=ev_loop),
-            PySignalWatcher._new_(signal_watcher=signal_watcher, callbacks=callbacks_dict),
-            revents
-        )
+    cdef void default_callback(libev.ev_loop *ev_loop, libev.ev_signal *signal_watcher, int revents) noexcept nogil:
+        # ev_run() runs with the GIL released (see PyLoop.run); reacquire it before touching
+        # any Python object, since this callback is invoked directly from libev's C code.
+        with gil:
+            callbacks_dict: dict[str, Callable[..., Any]] = <dict>signal_watcher.data
+            callbacks_dict["default"](
+                PyLoop._new_(loop=ev_loop),
+                PySignalWatcher._new_(signal_watcher=signal_watcher, callbacks=callbacks_dict),
+                revents
+            )
 
 cdef class PyTimerWatcher:
     cdef libev.ev_timer *timer_watcher
@@ -1080,13 +1092,16 @@ cdef class PyTimerWatcher:
         return float(libev.ev_timer_remaining(loop=loop.loop, timer=self.timer_watcher))
     
     @staticmethod
-    cdef default_callback(libev.ev_loop *ev_loop, libev.ev_timer *timer_watcher, int revents):
-        callbacks_dict: dict[str, Callable[..., Any]] = <dict>timer_watcher.data
-        callbacks_dict["default"](
-            PyLoop._new_(loop=ev_loop),
-            PyTimerWatcher._new_(timer_watcher=timer_watcher, callbacks=callbacks_dict),
-            revents
-        )
+    cdef void default_callback(libev.ev_loop *ev_loop, libev.ev_timer *timer_watcher, int revents) noexcept nogil:
+        # ev_run() runs with the GIL released (see PyLoop.run); reacquire it before touching
+        # any Python object, since this callback is invoked directly from libev's C code.
+        with gil:
+            callbacks_dict: dict[str, Callable[..., Any]] = <dict>timer_watcher.data
+            callbacks_dict["default"](
+                PyLoop._new_(loop=ev_loop),
+                PyTimerWatcher._new_(timer_watcher=timer_watcher, callbacks=callbacks_dict),
+                revents
+            )
 
 
 cdef class PyStatWatcher:
@@ -1141,13 +1156,16 @@ cdef class PyStatWatcher:
         libev.ev_stat_stop(loop=loop.loop, watcher=self.stat_watcher)
 
     @staticmethod
-    cdef default_callback(libev.ev_loop *ev_loop, libev.ev_stat *stat_watcher, int revents):
-        callbacks_dict: dict[str, Callable[..., Any]] = <dict>stat_watcher.data
-        callbacks_dict["default"](
-            PyLoop._new_(loop=ev_loop),
-            PyStatWatcher._new_(stat_watcher=stat_watcher, callbacks=callbacks_dict),
-            revents
-        )
+    cdef void default_callback(libev.ev_loop *ev_loop, libev.ev_stat *stat_watcher, int revents) noexcept nogil:
+        # ev_run() runs with the GIL released (see PyLoop.run); reacquire it before touching
+        # any Python object, since this callback is invoked directly from libev's C code.
+        with gil:
+            callbacks_dict: dict[str, Callable[..., Any]] = <dict>stat_watcher.data
+            callbacks_dict["default"](
+                PyLoop._new_(loop=ev_loop),
+                PyStatWatcher._new_(stat_watcher=stat_watcher, callbacks=callbacks_dict),
+                revents
+            )
 
 
 # Enums
@@ -1806,6 +1824,47 @@ cdef IconData readSvgIcon(str iconPath):
     resvg.resvg_tree_destroy(tree=tree)
     cairo.cairo_surface_destroy(surface=surface)
     return iconData
+
+def PyRenderSvgToArgb(filepath: str, size: int) -> Optional[bytes]:
+    """Rasterize an SVG to `size`x`size` raw ARGB32 pixels, network byte order (A,R,G,B per pixel).
+
+    No cairo/PNG involved: resvg renders straight into our own buffer, for callers (the tray icon)
+    that want pixels to send over D-Bus rather than a file on disk. `None` on a parse failure.
+    """
+    cdef resvg.resvg_options *options = resvg.resvg_options_create()
+    cdef resvg.resvg_render_tree *tree = NULL
+    cdef int result = resvg.resvg_parse_tree_from_file(
+        file_path=get_char_from_py_string(string=filepath), opt=options, tree=&tree
+    )
+    resvg.resvg_options_destroy(opt=options)
+    if result != resvg.resvg_error.RESVG_OK:
+        return None
+
+    cdef uint32_t dimension = <uint32_t>size
+    cdef size_t buffer_size = <size_t>(dimension * dimension * 4)
+    cdef unsigned char *buffer = <unsigned char *>malloc(size=buffer_size)
+    memset(buffer, 0, buffer_size)
+
+    resvg.resvg_render(
+        tree=tree,
+        fit_to=resvg.resvg_fit_to(type=resvg.resvg_fit_to_type.RESVG_FIT_TO_TYPE_WIDTH, value=<float>size),
+        transform=resvg.resvg_transform_identity(),
+        width=dimension,
+        height=dimension,
+        pixmap=<char *>buffer,
+    )
+    resvg.resvg_tree_destroy(tree=tree)
+
+    # resvg writes RGBA per pixel; the SNI tray protocol wants ARGB (network byte order: A,R,G,B).
+    argb: bytearray = bytearray(buffer_size)
+    cdef size_t i
+    for i in range(0, buffer_size, 4):
+        argb[i] = buffer[i + 3]
+        argb[i + 1] = buffer[i]
+        argb[i + 2] = buffer[i + 1]
+        argb[i + 3] = buffer[i + 2]
+    free(buffer)
+    return bytes(argb)
 
 cdef IconData readIconWithImageMagick(str iconPath):
     cdef IconData iconData = IconData(length=0, data=NULL, magick_memory=False)  # type: ignore

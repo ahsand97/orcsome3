@@ -28,13 +28,17 @@ _ignore_logger: bool = False
 _KeyHandler: TypeAlias = Callable[[xlib.TYPES.Cython_Window, xlib.XKeyEvent], None]
 _ButtonHandler: TypeAlias = Callable[[xlib.TYPES.Cython_Window, xlib.XButtonEvent], None]
 _ClientMessageHandler: TypeAlias = Callable[[xlib.TYPES.Cython_Window, xlib.XClientMessageEvent], None]
+_PropertyHandler: TypeAlias = Callable[[xlib.TYPES.Cython_Window, xlib.XPropertyEvent], None]
+# Window isn't defined yet at module scope here, and the wrapper's own (Window, event) signature
+# is concrete rather than a passthrough TypeVar (unlike on_property_change) — a precisely-typed
+# alias would need a forward reference, so this stays as loose as _WindowEventCbs's value type.
+_CreateHandler: TypeAlias = Callable[..., None]
 _CbNone = TypeVar("_CbNone", bound=Callable[[], None])
 _CbKey = TypeVar("_CbKey", bound=Callable[..., None])
 _CbButton = TypeVar("_CbButton", bound=Callable[..., None])
 _CbClient = TypeVar("_CbClient", bound=Callable[..., None])
 _CbStruct = TypeVar("_CbStruct", bound=Callable[..., None])
 _CbTimer = TypeVar("_CbTimer", bound=Callable[[], Optional[bool]])
-_WindowCbs: TypeAlias = dict[Optional[xlib.TYPES.Cython_Window], list[Callable[[], None]]]
 _WindowEventCbs: TypeAlias = dict[Optional[xlib.TYPES.Cython_Window], list[Callable[..., None]]]
 # [press, release]; one XGrabKey is shared when both on_key and on_key_release bind the same combo
 _KeyGrabSlots: TypeAlias = list[Optional[_KeyHandler]]
@@ -153,6 +157,7 @@ class WindowManager(SingletonMixin):
         self.display: xlib.TYPES.Cython_Display = xlib.x_open_display()
         self.root: Window = Window(xlib.get_default_root_window(display=self.display))
         self._loop: Optional[ev.Loop] = loop
+        self._xevent_watcher: Optional[ev.IOWatcher] = None
         self.atom_cache: AtomCache = AtomCache(wm=self)
         self._wm_name: Optional[str] = None
         self._wm_name_loaded: bool = False
@@ -163,15 +168,15 @@ class WindowManager(SingletonMixin):
         self._key_grabs: dict[xlib.TYPES.Cython_Window, dict[tuple[int, xlib.TYPES.Cython_KeyCode], _KeyGrabSlots]] = {}
         self._button_handlers: dict[Optional[WindowMatchers], dict[tuple[int, int], _ButtonHandler]] = {}
         self._button_grabs: dict[xlib.TYPES.Cython_Window, dict[tuple[int, int], _ButtonHandler]] = {}
-        self._create_handlers: list[Callable[[], None]] = []
-        self._destroy_handlers: _WindowCbs = {}
-        self._focus_handlers: _WindowCbs = {}
-        self._unfocus_handlers: _WindowCbs = {}
+        self._create_handlers: list[_CreateHandler] = []
+        self._destroy_handlers: _WindowEventCbs = {}
+        self._focus_handlers: _WindowEventCbs = {}
+        self._unfocus_handlers: _WindowEventCbs = {}
         self._map_handlers: _WindowEventCbs = {}
         self._unmap_handlers: _WindowEventCbs = {}
         self._configure_handlers: _WindowEventCbs = {}
         self._property_handlers: dict[
-            xlib.TYPES.Cython_Atom, dict[Optional[xlib.TYPES.Cython_Window], list[Callable[[], None]]]
+            xlib.TYPES.Cython_Atom, dict[Optional[xlib.TYPES.Cython_Window], list[_PropertyHandler]]
         ] = {}
         self._client_message_handlers: dict[
             xlib.TYPES.Cython_Atom, dict[Optional[xlib.TYPES.Cython_Window], list[_ClientMessageHandler]]
@@ -181,12 +186,15 @@ class WindowManager(SingletonMixin):
         self._deinit_handlers: list[Callable[[], None]] = []
         self._event_window: Optional[Window] = None
         if loop is not None:
-            xevent_watcher: ev.IOWatcher = ev.IOWatcher.new(
+            # Must stay alive for the life of the instance: __dealloc__ frees the underlying
+            # ev_io C struct, and libev keeps a pointer to it after start() (use-after-free
+            # crash in fd_reify otherwise, once the loop actually runs).
+            self._xevent_watcher = ev.IOWatcher.new(
                 callback=self._xevent_cb,
                 file_descriptor=xlib.get_connection_number(display=self.display),
                 event=ev.IOWatcher.Events.EV_READ,
             )
-            xevent_watcher.start(loop=loop)
+            self._xevent_watcher.start(loop=loop)
         Window.set_wm(self)
 
     @property
@@ -642,39 +650,41 @@ class WindowManager(SingletonMixin):
 
         return decorator_on_button
 
-    def on_create(self, matcher: Optional[WindowMatchers] = None) -> Callable[[_CbNone], _CbNone]:
+    def on_create(self, matcher: Optional[WindowMatchers] = None) -> Callable[[_CbStruct], _CbStruct]:
         """
         Run on CreateNotify, including the existing-client sweep in `init()`.
 
-        Use `@wm.on_create()` or `@wm.on_create(WindowMatchers(...))`.
+        Use `@wm.on_create()` or `@wm.on_create(WindowMatchers(...))`. Filter with a `WindowMatchers`
+        instance (not `name=` / `cls=` kwargs).
 
-        Use `event_window` inside the callback. Filter with a `WindowMatchers` instance
-        (not `name=` / `cls=` kwargs)::
+        `event` is `None` during the startup sweep (there is no real CreateNotify for windows that
+        already existed before orcsome3 started) and a real `XCreateWindowEvent` otherwise::
 
             @wm.on_create()
-            def on_any_create() -> None:
-                print(wm.event_window.get_name_and_class())
+            def on_any_create(window: Window, event: Optional[XCreateWindowEvent]) -> None:
+                print(window.get_name_and_class())
 
             @wm.on_create(matcher=WindowMatchers(class_="Opera"))
-            def replace_opera() -> None:
-                wm.event_window.close()
+            def replace_opera(window: Window, event: Optional[XCreateWindowEvent]) -> None:
+                window.close()
 
         Call `.remove()` on the decorated function to unregister.
         """
         return self.on_create_manage(ignore_startup=False, matcher=matcher)
 
-    def on_manage(self, matcher: Optional[WindowMatchers] = None) -> Callable[[_CbNone], _CbNone]:
+    def on_manage(self, matcher: Optional[WindowMatchers] = None) -> Callable[[_CbStruct], _CbStruct]:
         """
-        Same as `on_create`, but skipped for windows already mapped when `init()` runs.
+        Same as `on_create`, but skipped for windows already mapped when `init()` runs — so `event`
+        is always a real `XCreateWindowEvent` here, never `None`.
 
         Use `@wm.on_manage()` or `@wm.on_manage(WindowMatchers(...))`.
 
         Nested per-window hooks belong here so they are not installed once per existing client at startup::
 
             @wm.on_manage(matcher=WindowMatchers(name="easyeffects", class_="easyeffects"))
-            def on_easyeffects() -> None:
-                @wm.on_destroy(window=wm.event_window)
-                def on_easyeffects_gone() -> None:
+            def on_easyeffects(window: Window, event: XCreateWindowEvent) -> None:
+                @wm.on_destroy(window=window)
+                def on_easyeffects_gone(window: Window, event: XDestroyWindowEvent) -> None:
                     print("easyeffects closed")
 
         Call `.remove()` to unregister.
@@ -683,23 +693,23 @@ class WindowManager(SingletonMixin):
 
     def on_create_manage(
         self, ignore_startup: bool, matcher: Optional[WindowMatchers] = None
-    ) -> Callable[[_CbNone], _CbNone]:
+    ) -> Callable[[_CbStruct], _CbStruct]:
         """Shared implementation of `on_create` / `on_manage`. Prefer those in the config.
 
         Args:
         - `ignore_startup`: If True, skip the existing-client sweep in `init()` (`on_manage`)
-        - `matcher`: If set, run only when `event_window` matches
+        - `matcher`: If set, run only when `window` matches
 
         Sets `.remove()` on the **user** function (the object `@wm.on_create()` returns).
         """
 
-        def decorator(function: _CbNone) -> _CbNone:
+        def decorator(function: _CbStruct) -> _CbStruct:
             @wraps(wrapped=function)
-            def wrapper() -> None:
+            def wrapper(window: Window, event: Optional[xlib.XCreateWindowEvent]) -> None:
                 if ignore_startup and self._startup:
                     return
-                if matcher is None or self.event_window.matches(matcher=matcher):
-                    function()
+                if matcher is None or window.matches(matcher=matcher):
+                    function(window, event)
 
             def remove() -> None:
                 try:
@@ -713,38 +723,10 @@ class WindowManager(SingletonMixin):
 
         return decorator
 
-    def _window_cb_decorator(
-        self, handlers: _WindowCbs, window: Optional[xlib.TYPES.Cython_Window]
-    ) -> Callable[[_CbNone], _CbNone]:
-        """`on_destroy`-style: `window=None` is every window, else one id. Callback uses `event_window`."""
-
-        def decorator(function: _CbNone) -> _CbNone:
-            def remove() -> None:
-                try:
-                    handlers[window].remove(function)
-                except Exception:
-                    _logger.exception(msg="An exception occurred removing the function.")
-
-            handlers.setdefault(window, []).append(function)
-            setattr(function, "remove", remove)
-            return function
-
-        return decorator
-
-    def _dispatch_window_cbs(self, handlers: _WindowCbs, window: xlib.TYPES.Cython_Window) -> None:
-        """Run `window=None` handlers, then per-id handlers. Sets `event_window`."""
-        self._event_window = Window(window)
-        if None in handlers:
-            for handler in handlers[None]:
-                handler()
-        if window in handlers:
-            for handler in handlers[window]:
-                handler()
-
     def _window_event_cb_decorator(
         self, handlers: _WindowEventCbs, window: Optional[xlib.TYPES.Cython_Window]
     ) -> Callable[[_CbStruct], _CbStruct]:
-        """Like `_window_cb_decorator`, but the callback is `(window, event)`."""
+        """`on_destroy`-style: `window=None` is every window, else one id. Callback is `(window, event)`."""
 
         def decorator(function: _CbStruct) -> _CbStruct:
             def remove() -> None:
@@ -775,55 +757,54 @@ class WindowManager(SingletonMixin):
             for handler in handlers[window]:
                 handler(event_window, event)
 
-    def on_destroy(self, window: Optional[xlib.TYPES.Cython_Window] = None) -> Callable[[_CbNone], _CbNone]:
+    def on_destroy(self, window: Optional[xlib.TYPES.Cython_Window] = None) -> Callable[[_CbStruct], _CbStruct]:
         """Signal decorator for DestroyNotify.
 
-        `@wm.on_destroy()` runs for every destroyed window. Pass `window=` (typically `wm.event_window`
-        from `on_manage`) to listen to one id.
+        `@wm.on_destroy()` runs for every destroyed window. Pass `window=` (typically the `window`
+        parameter from `on_manage`) to listen to one id.
 
-        The callback's `event_window` is only that id; reading properties after destroy will fail.
+        `window` is only that id; reading properties on it will fail (it is already gone)::
 
             @wm.on_destroy()
-            def cb_destroy_window() -> None:
-                print(f"The window {wm.event_window} was destroyed")
+            def cb_destroy_window(window: Window, event: XDestroyWindowEvent) -> None:
+                print(f"The window {window} was destroyed")
 
             @wm.on_manage(matcher=WindowMatchers(name="easyeffects", class_="easyeffects"))
-            def on_create_easyeffects() -> None:
-                @wm.on_destroy(window=wm.event_window)
-                def on_destroy_easyeffects() -> None:
+            def on_create_easyeffects(window: Window, event: XCreateWindowEvent) -> None:
+                @wm.on_destroy(window=window)
+                def on_destroy_easyeffects(window: Window, event: XDestroyWindowEvent) -> None:
                     print("easyeffect's window destroyed")
 
         Call `.remove()` on the decorated function to unregister.
         """
-        return self._window_cb_decorator(handlers=self._destroy_handlers, window=window)
+        return self._window_event_cb_decorator(handlers=self._destroy_handlers, window=window)
 
     def on_property_change(
         self, property: str, window: Optional[xlib.TYPES.Cython_Window] = None
-    ) -> Callable[[_CbNone], _CbNone]:
+    ) -> Callable[[_CbStruct], _CbStruct]:
         """Signal decorator for PropertyNotify (new value only).
 
         `property` is an atom name (`_NET_WM_STATE`, …). `window=None` (default) is every window;
-        pass `window=wm.event_window` to watch one id.
+        pass `window=` (typically the `window` parameter from `on_manage`) to watch one id.
 
             @wm.on_property_change(property="_NET_WM_STATE")
-            def window_maximized_state_change() -> None:
-                window: Window = wm.event_window
+            def window_maximized_state_change(window: Window, event: XPropertyEvent) -> None:
                 if window.maximized_vert and window.maximized_horz:
                     print("The window is maximized now!")
 
             @wm.on_manage()
-            def switch_to_desktop() -> None:
-                if wm.event_window.activate_desktop() is None:
+            def switch_to_desktop(window: Window, event: XCreateWindowEvent) -> None:
+                if window.activate_desktop() is None:
 
-                    @wm.on_property_change(window=wm.event_window, property="_NET_WM_DESKTOP")
-                    def property_was_set() -> None:
-                        wm.event_window.activate_desktop()
+                    @wm.on_property_change(window=window, property="_NET_WM_DESKTOP")
+                    def property_was_set(window: Window, event: XPropertyEvent) -> None:
+                        window.activate_desktop()
                         property_was_set.remove()
 
         Call `.remove()` on the decorated function to unregister.
         """
 
-        def decorator(function: _CbNone) -> _CbNone:
+        def decorator(function: _CbStruct) -> _CbStruct:
             def remove() -> None:
                 try:
                     self._property_handlers[self.atom_cache.get_atom(name=property)][window].remove(function)
@@ -838,19 +819,23 @@ class WindowManager(SingletonMixin):
 
         return decorator
 
-    def on_focus(self, window: Optional[xlib.TYPES.Cython_Window] = None) -> Callable[[_CbNone], _CbNone]:
+    def on_focus(self, window: Optional[xlib.TYPES.Cython_Window] = None) -> Callable[[_CbStruct], _CbStruct]:
         """Signal decorator for FocusIn (`NotifyNormal` / `NotifyWhileGrabbed`).
 
-        `@wm.on_focus()` runs for every focused window. Pass `window=` (typically `wm.event_window`
-        from `on_manage`) to listen to one id. Use `event_window` inside the callback.
+        `@wm.on_focus()` runs for every focused window. Pass `window=` (typically the `window`
+        parameter from `on_manage`) to listen to one id.
+
+        Signature::
+
+            def function_cb(window: Window, event: XFocusChangeEvent) -> None: ...
 
         Call `.remove()` on the decorated function to unregister.
         """
-        return self._window_cb_decorator(handlers=self._focus_handlers, window=window)
+        return self._window_event_cb_decorator(handlers=self._focus_handlers, window=window)
 
-    def on_unfocus(self, window: Optional[xlib.TYPES.Cython_Window] = None) -> Callable[[_CbNone], _CbNone]:
+    def on_unfocus(self, window: Optional[xlib.TYPES.Cython_Window] = None) -> Callable[[_CbStruct], _CbStruct]:
         """Signal decorator for FocusOut (`NotifyNormal` / `NotifyWhileGrabbed`). Same `window=` rules as `on_focus`."""
-        return self._window_cb_decorator(handlers=self._unfocus_handlers, window=window)
+        return self._window_event_cb_decorator(handlers=self._unfocus_handlers, window=window)
 
     def on_map(self, window: Optional[xlib.TYPES.Cython_Window] = None) -> Callable[[_CbStruct], _CbStruct]:
         """Signal decorator for MapNotify. Same `window=` rules as `on_destroy`.
@@ -1161,8 +1146,11 @@ class WindowManager(SingletonMixin):
                 return client
         return None
 
-    def _process_create_window(self, window: Window) -> None:
-        """Select events on `window`, run create handlers, then grab matching per-window hotkeys."""
+    def _process_create_window(self, window: Window, event: Optional[xlib.XCreateWindowEvent] = None) -> None:
+        """Select events on `window`, run create handlers, then grab matching per-window hotkeys.
+
+        `event` is `None` for the startup sweep in `init()` (no real CreateNotify exists for those).
+        """
         xlib.x_select_input(
             display=self.display,
             window=window,
@@ -1174,7 +1162,7 @@ class WindowManager(SingletonMixin):
         )
         self._event_window = window
         for handler in self._create_handlers:
-            handler()
+            handler(window, event)
         self._install_key_handlers_for_window(window=window)
         self._install_button_handlers_for_window(window=window)
 
@@ -1279,7 +1267,7 @@ class WindowManager(SingletonMixin):
             _ignore_logger = False
             return
         _ignore_logger = False
-        self._process_create_window(window=window)
+        self._process_create_window(window=window, event=event)
 
     def _handle_destroy(self, event: xlib.XEvent) -> None:
         if not isinstance(event, xlib.XDestroyWindowEvent):
@@ -1288,7 +1276,7 @@ class WindowManager(SingletonMixin):
         if event.window == self._recently_destroyed_window:
             return
         self._recently_destroyed_window = event.window
-        self._dispatch_window_cbs(handlers=self._destroy_handlers, window=event.window)
+        self._dispatch_window_event_cbs(handlers=self._destroy_handlers, window=event.window, event=event)
         self._process_remove_window(window=event.window)
 
     def _handle_property(self, event: xlib.XEvent) -> None:
@@ -1297,16 +1285,15 @@ class WindowManager(SingletonMixin):
         atom: xlib.TYPES.Cython_Atom = event.atom
         if event.state == xlib.XPropertyEvent.STATE.PropertyNewValue and atom in self._property_handlers:
             self._event_window = Window(event.window)
-            wphandlers: dict[Optional[xlib.TYPES.Cython_Window], list[Callable[[], None]]] = self._property_handlers[
-                atom
-            ]
+            event_window: Window = self._event_window
+            wphandlers: dict[Optional[xlib.TYPES.Cython_Window], list[_PropertyHandler]] = self._property_handlers[atom]
             if event.window in wphandlers:
                 for handler in wphandlers[event.window]:
-                    handler()
+                    handler(event_window, event)
 
             if None in wphandlers:
                 for handler in wphandlers[None]:
-                    handler()
+                    handler(event_window, event)
 
     def _deliver_structure(
         self,
@@ -1362,7 +1349,7 @@ class WindowManager(SingletonMixin):
         if event.type == xlib.XEvent.EVENT_TYPES.FocusIn:
             self._remember_focus(window=event.window)
             if is_real_focus:
-                self._dispatch_window_cbs(handlers=self._focus_handlers, window=event.window)
+                self._dispatch_window_event_cbs(handlers=self._focus_handlers, window=event.window, event=event)
             if is_real_focus and self.track_kbd_layout:
                 prop: Optional[xlib.WindowProperty] = Window(event.window).get_property(property_="_ORCSOME_KBD_GROUP")
                 if prop is not None:
@@ -1372,7 +1359,7 @@ class WindowManager(SingletonMixin):
                     )
         else:
             if is_real_focus:
-                self._dispatch_window_cbs(handlers=self._unfocus_handlers, window=event.window)
+                self._dispatch_window_event_cbs(handlers=self._unfocus_handlers, window=event.window, event=event)
             if is_real_focus and self.track_kbd_layout:
                 _ = Window(event.window).set_property(
                     property_name="_ORCSOME_KBD_GROUP",
@@ -1382,28 +1369,35 @@ class WindowManager(SingletonMixin):
                 )
 
     def _xevent_cb(self, __loop__: ev.Loop, __watcher__: ev.IOWatcher, __revents__: int) -> None:
-        while True:
-            pending_events: int = xlib.x_pending(display=self.display)
-            if not pending_events:
-                break
+        try:
+            while True:
+                pending_events: int = xlib.x_pending(display=self.display)
+                if not pending_events:
+                    break
 
-            while pending_events > 0:
-                event: xlib.XEvent = xlib.x_next_event(display=self.display)
-                pending_events -= 1
-
-                try:
-                    handler: Callable[[xlib.XEvent], None] = self._event_handlers[event.type]
-                except KeyError:
-                    continue
-
-                try:
-                    handler(event)
-                except _RestartException:
-                    if self._restart_handler is not None:
-                        self._restart_handler()
+                while pending_events > 0:
+                    try:
+                        event: xlib.XEvent = xlib.x_next_event(display=self.display)
+                    except Exception:
+                        _logger.exception(msg="XNextEvent failed")
                         return
-                except Exception as e:
-                    _logger.exception(msg=e)
+                    pending_events -= 1
+
+                    try:
+                        handler: Callable[[xlib.XEvent], None] = self._event_handlers[event.type]
+                    except KeyError:
+                        continue
+
+                    try:
+                        handler(event)
+                    except _RestartException:
+                        if self._restart_handler is not None:
+                            self._restart_handler()
+                            return
+                    except Exception as e:
+                        _logger.exception(msg=e)
+        except Exception as e:
+            _logger.exception(msg=e)
 
     def get_screen_size(self) -> Optional[xlib.XWindowGeometry]:
         """Get size of screen (root window)"""

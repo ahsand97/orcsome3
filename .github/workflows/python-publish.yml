@@ -14,6 +14,9 @@ permissions:
 env:
   CIBW_SKIP: "*-musllinux_* *t-*"
   CIBW_BEFORE_BUILD: "pip install 'Cython>=3.0'"
+  # The manylinux container has none of the X11 dev headers orcsome3_backend.pyx needs; the static
+  # libs from `validate`'s native build are relayed in separately (see wheels jobs' download step).
+  CIBW_BEFORE_ALL_LINUX: "yum install -y libX11-devel libXext-devel libXScrnSaver-devel libXtst-devel"
   CIBW_ENVIRONMENT: "ORCSOME3_BUILD_JOBS=2"
   CIBW_TEST_SKIP: "*"
 
@@ -32,14 +35,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            git cmake autoconf automake libtool pkg-config meson ninja-build \
-            libx11-dev libxss-dev libxext-dev libxtst-dev curl
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      # Static libs already built by `validate` (native, Linux glibc) — only linking happens here,
+      # so no cmake/meson/rust toolchain is needed in this job.
+      - uses: actions/download-artifact@v8
+        with:
+          name: orcsome3-built-libraries
+          path: orcsome3_built_libraries
 
       - uses: pypa/cibuildwheel@v4.2.0
         env:
@@ -58,14 +59,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            git cmake autoconf automake libtool pkg-config meson ninja-build \
-            libx11-dev libxss-dev libxext-dev libxtst-dev curl
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      # Static libs already built by `validate` (native, Linux glibc) — only linking happens here,
+      # so no cmake/meson/rust toolchain is needed in this job.
+      - uses: actions/download-artifact@v8
+        with:
+          name: orcsome3-built-libraries
+          path: orcsome3_built_libraries
 
       - uses: pypa/cibuildwheel@v3.4.1
         env:
